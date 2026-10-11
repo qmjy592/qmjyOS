@@ -1,0 +1,77 @@
+# Compiler and linker outputs
+*.o
+*.elf
+*.bin
+
+# Debug and build logs
+*.log
+*.map
+*.d
+
+# Local backup directories
+backup_entry_fix/
+backup_ring0/
+
+# Historical source snapshots
+*.bak
+*.before
+*.before-*
+*.before_*
+*.orig
+*.rej
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*token*
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+
+# Accidental shell artifacts and local scratch files
+/0
+/done
+/echo
+/fi
+/sed
+/switches++
+/build.log
+/qemu.log
+
+# Historical review notes and obsolete local scripts
+/interrupt-review.txt
+/next-review.txt
+/next-step-results.txt
+/REPAIR-REPORT.txt
+/fix.sh
+/Makefile.before-*
+/linker32.ld.before-*
+
+# Kernel build artifacts
+*.o
+*.elf
+*.bin
+*.map
+*.d
+
+# Historical source snapshots
+*.bak
+*.before
+*.before-*
+*.before_*
+*.orig
+*.rej
+
+# Local review backups
+local_review_backup_*/
+
+# Temporary build and emulator logs
+build.log
+qemu.log
