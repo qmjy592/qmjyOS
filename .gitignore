@@ -75,3 +75,6 @@ local_review_backup_*/
 # Temporary build and emulator logs
 build.log
 qemu.log
+
+# Host-side test binary
+.memory-host-test
