@@ -3,6 +3,8 @@
 #include "pic.h"
 #include "timer.h"
 #include "task.h"
+#include "paging.h"
+#include "memory.h"
 #include <stdint.h>
 
 extern void gdt_load_and_reload_cs(const void *gdtr);
@@ -108,9 +110,31 @@ void enter_user_mode(void (*user_func)(void)) {
     );
 }
 
-void main(void) {
+extern char __kernel64_start, __kernel64_end;
+
+void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
     serial_init();
     serial_puts("Hello, x86_64 kernel!\n");
+
+    int mm_status = mm_init_from_multiboot(multiboot_magic, multiboot_info_addr,
+        (uint64_t)(uintptr_t)&__kernel64_start, (uint64_t)(uintptr_t)&__kernel64_end);
+    if (mm_status == MM_OK) {
+        serial_puts("Physical page allocator: initialized from Multiboot mmap.\n");
+        if (mm_self_test() == MM_OK) {
+            serial_puts("Physical page allocator self-test: PASS (alloc/free/double-free).\n");
+        } else {
+            serial_puts("Physical page allocator self-test: FAIL.\n");
+        }
+    } else {
+        serial_puts("Physical page allocator: unavailable (Multiboot map validation failed).\n");
+        serial_puts("Physical page allocator self-test: SKIPPED (allocator unavailable).\n");
+    }
+
+    if (vm_self_test() == 0) {
+        serial_puts("Paging manager self-test: PASS (inactive page tables).\n");
+    } else {
+        serial_puts("Paging manager self-test: FAIL.\n");
+    }
 
     pic_remap();
     idt_init();
@@ -120,18 +144,8 @@ void main(void) {
 
     serial_puts("GDT and TSS initialized.\n");
     serial_puts("Ring 3 test temporarily disabled: page permissions are not ready.\n");
-    serial_puts("Safe checkpoint: starting cooperative Ring 0 tasks.\n");
-    __asm__ volatile("sti");
-
-    uint64_t last_tick = 0;
-    for (;;) {
-        __asm__ volatile("hlt");
-        uint64_t now = timer_get_ticks();
-        if (now / 100 != last_tick / 100) {
-            last_tick = now;
-            serial_puts("Timer IRQ active: ticks=");
-            // 暂时只输出验证标记，避免依赖尚未确认的数字格式化函数
-            serial_puts("100-tick checkpoint\\n");
-        }
-    }
+    task_init();
+    serial_puts("Starting cooperative Ring 0 scheduler.\n");
+    __asm__ volatile("sti" ::: "memory");
+    task_start();
 }

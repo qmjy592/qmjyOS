@@ -1,9 +1,20 @@
 .section .text
 .code64
+
 .global switch_to
 .global task_trampoline
+
 .extern task_exit
-# context memory order: r15,r14,r13,r12,rbx,rbp,return RIP
+
+# struct context:
+#   0: r15
+#   8: r14
+#  16: r13
+#  24: r12
+#  32: rbx
+#  40: rbp
+#  48: return RIP (位于 context 之后，不属于 struct context)
+
 switch_to:
     push %rbp
     push %rbx
@@ -11,8 +22,10 @@ switch_to:
     push %r13
     push %r14
     push %r15
+
     mov %rsp, (%rdi)
     mov %rsi, %rsp
+
     pop %r15
     pop %r14
     pop %r13
@@ -20,13 +33,16 @@ switch_to:
     pop %rbx
     pop %rbp
     ret
-# First entry: r12 contains task entry; align stack for SysV call.
+
 task_trampoline:
     mov %r12, %rax
     sub $8, %rsp
     call *%rax
-    add $8, %rsp
     call task_exit
-1:  cli
+
+1:
+    cli
     hlt
     jmp 1b
+
+.section .note.GNU-stack,"",@progbits

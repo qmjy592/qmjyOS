@@ -9,7 +9,7 @@ LDFLAGS_32 := -m elf_i386 -T linker32.ld -nostdlib -static
 LDFLAGS_64 := -m elf_x86_64 -T linker64.ld -nostdlib -static
 
 OBJS_32 := src/boot.o
-OBJS_64 := src/entry64.o src/gdt_load.o src/main.o src/serial.o src/idt.o src/exception.o src/excep.o src/pic.o src/timer.o src/irq.o src/irq_entry.o
+OBJS_64 := src/entry64.o src/gdt_load.o src/main.o src/serial.o src/idt.o src/exception.o src/excep.o src/pic.o src/timer.o src/irq.o src/irq_entry.o src/paging.o src/memory.o src/task.o src/switch.o
 
 all: kernel.elf
 
@@ -51,3 +51,19 @@ clean:
 
 src/entry64.o: src/entry64.S
 	$(CC) $(CFLAGS_64) -c -o $@ $<
+
+# Host-side physical memory allocator tests.
+HOST_CC ?= clang
+HOST_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror
+HOST_MEMORY_TEST := .memory-host-test
+
+.PHONY: test-memory
+test-memory: $(HOST_MEMORY_TEST)
+	./$(HOST_MEMORY_TEST)
+
+$(HOST_MEMORY_TEST): tests/memory_host_test.c src/memory.c src/memory.h
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -o $@ tests/memory_host_test.c src/memory.c
+
+.PHONY: clean-memory-test
+clean-memory-test:
+	rm -f $(HOST_MEMORY_TEST)
