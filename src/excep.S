@@ -1181,6 +1181,7 @@ isr_common:
     mov 136(%rsp), %rdx
     mov %rsp, %r12
     andq $-16, %rsp
+    cld
     call exception_handler
     mov %r12, %rsp
 1:  cli

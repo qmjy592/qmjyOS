@@ -10,6 +10,11 @@ static uint64_t usable[MM_MAX_RANGES];
 static uint64_t usable_len[MM_MAX_RANGES];
 static size_t ranges;
 
+/* Non-usable Multiboot ranges are tracked separately from caller reservations. */
+static uint64_t firmware_reserved_base[MM_MAX_RANGES];
+static uint64_t firmware_reserved_len[MM_MAX_RANGES];
+static size_t firmware_reserved_count;
+
 /* Caller-owned reservations survive a new allocator initialization. Boot-owned
  * reservations are rebuilt from the new Multiboot info on each init attempt. */
 static uint64_t reserved_base[MM_MAX_RESERVED];
@@ -64,6 +69,10 @@ static void allocator_disable(void) {
 static int range_is_reserved(uint64_t pa) {
     for (size_t i = 0; i < reserved_count; ++i) {
         if (overlap(pa, MM_PAGE_SIZE, reserved_base[i], reserved_len[i])) return 1;
+    }
+    for (size_t i = 0; i < firmware_reserved_count; ++i) {
+        if (overlap(pa, MM_PAGE_SIZE,
+                    firmware_reserved_base[i], firmware_reserved_len[i])) return 1;
     }
     return 0;
 }
@@ -149,6 +158,7 @@ int mm_parse_multiboot_mmap(uint32_t addr, uint32_t length) {
     /* This parser dereferences the map through the bootstrap identity map; do
      * not accept a buffer outside that currently mapped physical window. */
     allocator_disable();
+    firmware_reserved_count = 0;
     if (!addr || !length || (uint64_t)addr + length > MM_LIMIT)
         return MM_ERR_ARGUMENT;
 
@@ -172,10 +182,33 @@ int mm_parse_multiboot_mmap(uint32_t addr, uint32_t length) {
         __builtin_memcpy(&len, p + 12, sizeof(len));
         __builtin_memcpy(&type, p + 20, sizeof(type));
 
-        if (type == 1 && len && base > UINT64_MAX - len) {
+        /* Reject address overflow in every memory-map entry,
+         * including reserved and non-usable regions. */
+        if (len && base > UINT64_MAX - len) {
             allocator_disable();
             return MM_ERR_FORMAT;
         }
+        if (type != 1 && len && base < MM_LIMIT) {
+            if (firmware_reserved_count >= MM_MAX_RANGES) {
+                allocator_disable();
+                firmware_reserved_count = 0;
+                return MM_ERR_CAPACITY;
+            }
+
+            uint64_t end = base + len;
+            uint64_t lo = align_down(base);
+            uint64_t hi;
+
+            if (end >= MM_LIMIT) hi = MM_LIMIT;
+            else if (!align_up_checked(end, &hi)) hi = MM_LIMIT;
+
+            if (lo < MM_LIMIT && hi > lo) {
+                firmware_reserved_base[firmware_reserved_count] = lo;
+                firmware_reserved_len[firmware_reserved_count] = hi - lo;
+                ++firmware_reserved_count;
+            }
+        }
+
         if (type == 1 && len && base < MM_LIMIT) {
             uint64_t lo;
             uint64_t end = base + len;
@@ -214,6 +247,51 @@ int mm_parse_multiboot_mmap(uint32_t addr, uint32_t length) {
                 ++free_count;
             }
         }
+    }
+
+
+    /*
+     * Non-type-1 Multiboot entries override overlapping usable ranges.
+     */
+    off = 0;
+    while (off < length) {
+        const uint8_t *p =
+            (const uint8_t *)(uintptr_t)((uint64_t)addr + off);
+
+        uint32_t size, type;
+        uint64_t base, len;
+
+        __builtin_memcpy(&size, p, sizeof(size));
+        __builtin_memcpy(&base, p + 4, sizeof(base));
+        __builtin_memcpy(&len, p + 12, sizeof(len));
+        __builtin_memcpy(&type, p + 20, sizeof(type));
+
+        if (type != 1 && len && base < MM_LIMIT) {
+            uint64_t end = base + len;
+            if (end > MM_LIMIT) end = MM_LIMIT;
+
+            uint64_t lo = align_down(base);
+            uint64_t hi;
+
+            if (end >= MM_LIMIT) hi = MM_LIMIT;
+            else if (!align_up_checked(end, &hi)) hi = MM_LIMIT;
+
+            for (size_t r = 0; r < ranges; ++r) {
+                uint64_t r_end = usable[r] + usable_len[r];
+                uint64_t start = lo > usable[r] ? lo : usable[r];
+                uint64_t stop = hi < r_end ? hi : r_end;
+
+                for (uint64_t pa = start; pa < stop; pa += MM_PAGE_SIZE) {
+                    size_t page = (size_t)(pa / MM_PAGE_SIZE);
+                    if (!bit_get(page)) {
+                        bit_set(page);
+                        if (free_count) --free_count;
+                    }
+                }
+            }
+        }
+
+        off += size + 4;
     }
 
     /* Reserve every tracked interval. Bit checks prevent overlapping ranges

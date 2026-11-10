@@ -11,7 +11,7 @@ LDFLAGS_64 := -m elf_x86_64 -T linker64.ld -nostdlib -static
 OBJS_32 := src/boot.o
 OBJS_64 := src/entry64.o src/gdt_load.o src/main.o src/serial.o src/idt.o src/exception.o src/excep.o src/pic.o src/timer.o src/irq.o src/irq_entry.o src/paging.o src/memory.o src/task.o src/switch.o
 
-.PHONY: all run clean test-memory clean-memory-test
+.PHONY: all run clean test-memory test-paging clean-memory-test
 
 all: kernel.elf
 
@@ -66,9 +66,23 @@ test-memory: $(HOST_MEMORY_TEST)
 $(HOST_MEMORY_TEST): tests/memory_host_test.c src/memory.c src/memory.h
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -o $@ tests/memory_host_test.c src/memory.c
 
+HOST_PAGING_TEST := .paging-host-test
+
+.PHONY: test-paging
+test-paging: $(HOST_PAGING_TEST)
+	./$(HOST_PAGING_TEST)
+
+$(HOST_PAGING_TEST): tests/paging_host_test.c src/paging.c src/paging.h
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -o $@ tests/paging_host_test.c src/paging.c
+
 .PHONY: clean-memory-test
 clean-memory-test:
-	rm -f $(HOST_MEMORY_TEST)
+	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
 
 # Header dependencies for reliable incremental rebuilds.
 -include $(OBJS_64:.o=.d) src/boot.d
+
+
+.PHONY: test-boot
+test-boot: kernel.elf kernel64.elf kernel64.bin
+	bash tools/verify_boot.sh

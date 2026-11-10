@@ -1,5 +1,6 @@
 .section .text
 .code64
+
 .extern irq_handler
 
 .global irq0
@@ -32,10 +33,18 @@ irq_common:
     push %r15
 
     mov 120(%rsp), %rdi
-    # Preserve original interrupt frame and align stack for the C ABI.
+
+    /* Preserve the original interrupt frame. */
     mov %rsp, %r12
+
+    /* Align stack and satisfy the SysV ABI. */
     andq $-16, %rsp
+
+    /* C functions must execute with DF clear. */
+    cld
     call irq_handler
+
+    /* Restore the original interrupt stack. */
     mov %r12, %rsp
 
     pop %r15
@@ -53,5 +62,6 @@ irq_common:
     pop %rcx
     pop %rbx
     pop %rax
+
     add $16, %rsp
     iretq

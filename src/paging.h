@@ -30,10 +30,11 @@ enum vm_status {
 };
 
 /*
- * Early inactive page-table builder for the current identity-mapped kernel.
- * vm_init() creates a fresh, separate root and does not load CR3.
- * Page-table pool storage is static and must remain identity-accessible.
- * This module does not allocate/free data frames or activate a root.
+ * Inactive page-table builder.
+ * vm_init() builds a supervisor identity map for the first 1 GiB using
+ * 2 MiB pages, matching the bootstrap page tables. vm_map_page() can split
+ * an existing 2 MiB mapping into 4 KiB entries while preserving neighboring
+ * mappings and their permissions. This module does not load CR3.
  */
 int vm_init(void);
 int vm_map_page(uint64_t virtual_address, uint64_t physical_address, uint64_t flags);
