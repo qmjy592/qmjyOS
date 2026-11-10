@@ -70,3 +70,28 @@ Starting cooperative Ring 0 scheduler.
 - 抢占式调度和完整系统调用 ABI。
 
 当前调度器仍是 Ring 0 协作式双任务调度器。
+## QEMU 实际运行验收补充（2026-11-10）
+
+### 实际运行结果
+
+本次在 QEMU 中完成了 Ring 0 → Ring 3 → Ring 0 的基础特权级往返测试。
+
+关键运行输出：
+
+```text
+[Ring 3] Preparing isolated user address space.
+[Ring 3] User code page: RX, U/S=1.
+[Ring 3] User stack page: RW/NX, U/S=1.
+[Ring 3] Kernel identity mapping: supervisor-only.
+[Ring 3] CR3 activated.
+[Ring 3] Entering CPL3.
+[Ring 3] System call received successfully.
+[Ring 3] Returning to Ring 0.
+[Ring 3] Returned to Ring 0 successfully.
+[Ring 3] Basic privilege transition: PASS.
+Cooperative scheduler initialized (2 tasks).
+Starting cooperative Ring 0 scheduler.
+[task A] running
+[task B] running
+抢占式调度。
+注意：make test-paging 是主机端页表逻辑测试，不能单独作为真实 CPU 权限隔离的证明。

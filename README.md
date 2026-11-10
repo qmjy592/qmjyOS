@@ -116,3 +116,59 @@ See [BUILD_AND_TESTING_CN_EN.md](BUILD_AND_TESTING_CN_EN.md) for caveats and tes
 No license has been selected. All rights are reserved by default until a license is added. Do not assume redistribution or reuse is permitted. qmjyOS is experimental and must not be used to protect sensitive data.
 
 项目尚未选择许可证。在正式添加许可证之前，默认保留所有权利。请勿自行假定允许再分发或复用。qmjyOS 属于实验性项目，不应用于保护敏感数据。
+
+<!-- QMjyOS-RING3-STATUS-START -->
+## 最新开发进度（2026-11-10）
+
+### Ring 3 基础特权级切换：已通过 QEMU 验收
+
+qmjyOS 已经在 QEMU 中完成真实的 Ring 0 → Ring 3 → Ring 0 特权级往返测试，并在返回内核态后继续运行原有 Ring 0 协作式双任务调度器。
+
+目前已经实现：
+
+- GDT 与 TSS 初始化。
+- 配置 TSS.RSP0 内核栈。
+- 使用 `iretq` 从 Ring 0 进入 CPL3。
+- 建立独立的用户态代码页和用户栈映射。
+- 用户代码页设置为 RX、U/S=1。
+- 用户栈设置为 RW/NX、U/S=1。
+- 内核身份映射保持 Supervisor-only。
+- 用户态通过 `int 0x80` 进入 Ring 0 系统调用处理程序。
+- 系统调用完成后成功返回 Ring 0。
+- Ring 3 测试结束后，原有 Ring 0 Task A / Task B 调度器继续运行。
+
+### 当前测试结果
+
+| 测试项目 | 结果 |
+|---|---|
+| `make clean && make` | 通过 |
+| `make test-memory` | 通过 |
+| `make test-paging` | 通过（主机端逻辑测试） |
+| `make test-boot` | 通过 |
+| QEMU 内核启动 | 通过 |
+| Ring 0 → Ring 3 → Ring 0 | 实际运行通过 |
+| `int 0x80` 系统调用 | 实际运行通过 |
+| Ring 0 Task A / Task B 调度 | 实际运行通过 |
+
+### 尚未完成的安全验证
+
+基础特权级切换通过，不代表所有用户态安全隔离测试已经完成。
+
+下一阶段需要完成：
+
+1. Ring 3 写入只读用户代码页时触发 Page Fault。
+2. Ring 3 访问 Supervisor-only 内核页面时触发 Page Fault。
+3. Ring 3 执行 NX 用户栈时触发 Page Fault。
+4. 验证 Page Fault 的 CR2、错误码和异常处理路径。
+5. 支持多个独立用户地址空间。
+6. 完善系统调用 ABI。
+7. 后续推进抢占式调度。
+
+### 下一阶段开发方向
+
+优先建立安全、可恢复的异常测试框架，再逐项验证用户代码页只读保护、内核页面访问保护和 NX 执行保护。
+
+现有 `src/task.c`、`src/task.h` 和 `src/switch.S` 保留，Ring 3 开发不会以删除原有 Ring 0 调度器为代价。
+
+详细验收记录见 [`RING3_VALIDATION_2026-11-10.md`](RING3_VALIDATION_2026-11-10.md)。
+<!-- QMjyOS-RING3-STATUS-END -->
