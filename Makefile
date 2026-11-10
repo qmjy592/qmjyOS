@@ -2,14 +2,16 @@ CC := clang
 LD := ld.lld
 OBJCOPY := llvm-objcopy
 
-CFLAGS_32 := --target=i386-unknown-none -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -nostdlib -Wall -O2 -g -Isrc
-CFLAGS_64 := --target=x86_64-unknown-none -m64 -mno-red-zone -mno-sse -mno-mmx -ffreestanding -fno-stack-protector -fno-pic -fno-pie -nostdlib -Wall -O2 -g -Isrc
+CFLAGS_32 := --target=i386-unknown-none -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -nostdlib -Wall -O2 -g -MMD -MP -Isrc
+CFLAGS_64 := --target=x86_64-unknown-none -m64 -mno-red-zone -mno-sse -mno-mmx -ffreestanding -fno-stack-protector -fno-pic -fno-pie -nostdlib -Wall -O2 -g -MMD -MP -Isrc
 
 LDFLAGS_32 := -m elf_i386 -T linker32.ld -nostdlib -static
 LDFLAGS_64 := -m elf_x86_64 -T linker64.ld -nostdlib -static
 
 OBJS_32 := src/boot.o
 OBJS_64 := src/entry64.o src/gdt_load.o src/main.o src/serial.o src/idt.o src/exception.o src/excep.o src/pic.o src/timer.o src/irq.o src/irq_entry.o src/paging.o src/memory.o src/task.o src/switch.o
+
+.PHONY: all run clean test-memory clean-memory-test
 
 all: kernel.elf
 
@@ -46,7 +48,7 @@ run: kernel.elf
 src/gdt_load.o: src/gdt_load.S
 	$(CC) $(CFLAGS_64) -c -o $@ $<
 clean:
-	rm -f src/*.o kernel.elf kernel64.elf kernel64.bin kernel64.o
+	rm -f src/*.o src/*.d kernel.elf kernel64.elf kernel64.bin kernel64.o
 
 
 src/entry64.o: src/entry64.S
@@ -67,3 +69,6 @@ $(HOST_MEMORY_TEST): tests/memory_host_test.c src/memory.c src/memory.h
 .PHONY: clean-memory-test
 clean-memory-test:
 	rm -f $(HOST_MEMORY_TEST)
+
+# Header dependencies for reliable incremental rebuilds.
+-include $(OBJS_64:.o=.d) src/boot.d

@@ -9,8 +9,6 @@
 
 extern void gdt_load_and_reload_cs(const void *gdtr);
 
-extern void gdt_load_and_reload_cs(const void *gdtr);
-
 // 分配 16KB 内核栈，用于 Ring 3 中断时切换回来
 uint8_t kernel_stack[16384] __attribute__((aligned(16)));
 uint64_t kernel_stack_top;
