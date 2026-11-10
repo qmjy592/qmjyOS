@@ -12,7 +12,7 @@ qmjyOS 当前采用“32 位引导层 + 64 位内核层”的两阶段结构。�
 2. **虚拟地址（Virtual Address）**：CPU 指令访问时使用、由分页硬件翻译的地址。
 3. **恒等映射（Identity Mapping）**：某个虚拟地址与同数值的物理地址对应。当前引导页表把前 1 GiB 这样映射。
 
-当前启动时使用的引导页表与 `paging.c` 管理的页表池不是同一个东西。前者已经通过 CR3 被 CPU 使用；后者目前只是内存中的一套独立数据结构，没有激活。
+启动阶段使用的引导页表与分页管理器维护的页表结构不是同一个东西。引导映射在早期启动阶段处于活动状态；Ring 3 运行流程会创建独立地址空间并通过 CR3 激活它。分页管理器自测试则独立检查页表数据结构。
 
 ### English
 
@@ -24,15 +24,15 @@ Three address/memory concepts must be distinguished:
 2. **Virtual address:** the address used by CPU instructions and translated by paging hardware.
 3. **Identity mapping:** a mapping where a virtual address has the same numeric value as its physical address. The current bootstrap maps the first 1 GiB this way.
 
-The active bootstrap page tables and the page-table pool managed by `paging.c` are not the same object. The former is loaded into CR3 and used by the CPU; the latter is currently a separate in-memory data structure and is not activated.
+The bootstrap page tables and the page-table manager are distinct. The bootstrap mapping is active during early boot. The Ring 3 runtime path creates and activates a separate address space through CR3; the paging manager self-test also checks page-table data structures independently.
 
 ## 2. Boot chain: Multiboot to 64-bit kernel / 启动链路：从 Multiboot 到 64 位内核
 
 ### 2.1 Multiboot header / Multiboot 头
 
-`src/boot.S` emits a Multiboot v1 header in the `.multiboot` section. The header contains the magic value `0x1BADB002`, flags `0x2`, and a checksum calculated so that the header fields sum to zero modulo 32 bits. The linker script keeps this section near the beginning of the 32-bit image.
+`boot/bios/boot.S` emits a Multiboot v1 header in the `.multiboot` section. The header contains the magic value `0x1BADB002`, flags `0x2`, and a checksum calculated so that the header fields sum to zero modulo 32 bits. The linker script keeps this section near the beginning of the 32-bit image.
 
-`src/boot.S` 在 `.multiboot` 段中生成 Multiboot v1 头。头部包含魔数 `0x1BADB002`、标志 `0x2`，以及使头部字段总和按 32 位运算结果为零的校验值。链接脚本通过 `KEEP` 保留该段，并将其放在 32 位映像靠前的位置。
+`boot/bios/boot.S` 在 `.multiboot` 段中生成 Multiboot v1 头。头部包含魔数 `0x1BADB002`、标志 `0x2`，以及使头部字段总和按 32 位运算结果为零的校验值。链接脚本通过 `KEEP` 保留该段，并将其放在 32 位映像靠前的位置。
 
 ### 2.2 32-bit entry and CPU setup / 32 位入口与 CPU 环境
 
@@ -70,9 +70,9 @@ The bootstrap loads the physical address of PML4 into CR3, sets CR4.PAE, sets EF
 
 ## 3. 64-bit entry and C environment / 64 位入口与 C 运行环境
 
-`src/entry64.S` receives the boot magic in EAX and the Multiboot information pointer in EBX. It copies them into R12D and R13D, disables interrupts, clears the direction flag, points RSP at `stack_top64`, aligns the stack to 16 bytes, and clears RBP.
+`arch/x86_64/boot/entry64.S` receives the boot magic in EAX and the Multiboot information pointer in EBX. It copies them into R12D and R13D, disables interrupts, clears the direction flag, points RSP at `stack_top64`, aligns the stack to 16 bytes, and clears RBP.
 
-`src/entry64.S` 从 EAX 接收引导魔数，从 EBX 接收 Multiboot 信息指针。它把二者保存到 R12D 和 R13D，关闭中断、清除方向标志，将 RSP 指向 `stack_top64`，按 16 字节对齐栈，并清零 RBP。
+`arch/x86_64/boot/entry64.S` 从 EAX 接收引导魔数，从 EBX 接收 Multiboot 信息指针。它把二者保存到 R12D 和 R13D，关闭中断、清除方向标志，将 RSP 指向 `stack_top64`，按 16 字节对齐栈，并清零 RBP。
 
 It then clears the linker-defined BSS interval `[__bss_start, __bss_end)` using `rep stosb`, restores the boot arguments into the C calling-convention registers EDI and ESI, and calls `main`. If `main` returns, the entry code enters a `cli; hlt` loop.
 

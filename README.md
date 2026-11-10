@@ -23,7 +23,7 @@
 - IDT infrastructure, exception stubs and serial panic diagnostics.
 - 8259 PIC remapping, PIT programming, IRQ0/IRQ1 entry and dispatch.
 - Multiboot memory-map parser and early physical-page allocator.
-- An independent inactive 4 KiB page-table manager with map/unmap/query/self-test interfaces.
+- A 4 KiB page-table manager with map/unmap/query operations; the Ring 3 runtime test activates a user address space through CR3.
 - Two-task cooperative Ring 0 scheduler and assembly context switch.
 - Host-side tests for the physical memory allocator.
 
@@ -34,7 +34,7 @@
 - IDT 基础设施、异常入口桩和串口 panic 诊断。
 - 8259 PIC 重映射、PIT 编程、IRQ0/IRQ1 入口与分发。
 - Multiboot 内存映射解析器和早期物理页分配器。
-- 独立且尚未激活的 4 KiB 页表管理器，提供映射、解除映射、查询和自测试接口。
+- 4 KiB 页表管理器提供映射、解除映射和查询操作；Ring 3 运行测试会通过 CR3 激活用户地址空间。
 - 双任务 Ring 0 协作式调度器和汇编上下文切换。
 - 物理内存分配器的主机侧测试。
 
@@ -44,9 +44,9 @@ The bootstrap currently maps the first 1 GiB with 2 MiB pages. This is not yet a
 
 引导阶段目前使用 2 MiB 页映射前 1 GiB。这还不是完整的进程地址空间设计。分页管理器维护独立的静态页表池，不会通过写入 CR3 激活其根页表。因此，它的自测试验证的是页表数据结构，而不是实际切换运行中的地址空间。
 
-The current kernel main path initializes the cooperative scheduler and enters its Ring 0 demo tasks. The PIT interrupt increments a tick counter; it does not preempt tasks or switch contexts. The Ring 3 test is explicitly disabled in the current main path because page permissions are not ready.
+The current kernel main path initializes memory and interrupt infrastructure, configures GDT/TSS, runs the basic Ring 3 address-space and syscall test, and then starts the cooperative Ring 0 scheduler. The PIT interrupt increments a tick counter; it does not preempt tasks or switch contexts.
 
-当前内核主流程会初始化协作式调度器并进入 Ring 0 演示任务。PIT 中断只增加 tick 计数，不会抢占任务或切换上下文。由于页权限尚未准备好，当前主流程明确禁用了 Ring 3 测试。
+当前内核主流程会初始化内存和中断基础设施，配置 GDT/TSS，执行基础 Ring 3 地址空间及系统调用测试，然后启动 Ring 0 协作式调度器。PIT 中断只增加 tick 计数，不会抢占任务或切换上下文。
 
 The exception handler reports diagnostic information and halts the kernel. It is not a user-process fault recovery mechanism. The keyboard IRQ path currently acknowledges the interrupt but does not implement a keyboard driver.
 
@@ -79,36 +79,35 @@ See [BUILD_AND_TESTING_CN_EN.md](BUILD_AND_TESTING_CN_EN.md) for caveats and tes
 ```text
 .
 ├── README.md
-├── PROJECT_OVERVIEW_CN_EN.md
-├── ARCHITECTURE_CN_EN.md
-├── BUILD_AND_TESTING_CN_EN.md
 ├── Makefile
-├── linker.ld
 ├── linker32.ld
 ├── linker64.ld
-├── src/
-│   ├── boot.S
-│   ├── entry64.S
-│   ├── gdt_load.S
-│   ├── main.c
-│   ├── idt.c
-│   ├── excep.S
-│   ├── exception.c
-│   ├── pic.c
-│   ├── irq.c / irq.h
-│   ├── irq_entry.S
-│   ├── timer.c
-│   ├── memory.c / memory.h
-│   ├── paging.c / paging.h
-│   ├── task.c / task.h
-│   ├── switch.S
-│   └── serial.c / serial.h
+├── ARCHITECTURE_CN_EN.md
+├── BUILD_AND_TESTING_CN_EN.md
+├── PROJECT_OVERVIEW_CN_EN.md
+├── RING3_VALIDATION_2026-11-10.md
+├── arch/
+├── assets/
+├── boot/
+├── config/
+├── docs/
+│   └── history/
+├── drivers/
+├── efi/
+├── fs/
+├── init/
+├── ipc/
+├── kernel/
+├── lib/
+├── mm/
+├── network/
+├── runtime/
+├── sched/
+├── scripts/
+├── security/
 ├── tests/
-│   ├── README.md
-│   └── memory_host_test.c
-└── tools/
-    ├── apply_paging_rollback_fix.py
-    └── fix_paging_rollback.py
+├── tools/
+└── user/
 ```
 
 ## License and security / 许可证与安全
@@ -168,7 +167,7 @@ qmjyOS 已经在 QEMU 中完成真实的 Ring 0 → Ring 3 → Ring 0 特权级�
 
 优先建立安全、可恢复的异常测试框架，再逐项验证用户代码页只读保护、内核页面访问保护和 NX 执行保护。
 
-现有 `src/task.c`、`src/task.h` 和 `src/switch.S` 保留，Ring 3 开发不会以删除原有 Ring 0 调度器为代价。
+现有 Ring 0 协作式调度器保留在 `sched/core/task.c`、`sched/core/task.h` 和 `arch/x86_64/cpu/switch.S`。Ring 3 基础特权级往返测试已接入主流程，不以删除原有调度器为代价。
 
 详细验收记录见 [`RING3_VALIDATION_2026-11-10.md`](RING3_VALIDATION_2026-11-10.md)。
 <!-- QMjyOS-RING3-STATUS-END -->

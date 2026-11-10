@@ -1,4 +1,4 @@
-#include "src/paging.h"
+#include "paging.h"
 #include <stdio.h>
 
 int main(void) {

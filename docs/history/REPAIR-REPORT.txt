@@ -1,0 +1,34 @@
+mykernel-stage1 repair bundle - first integrated milestone
+
+Basis: user-uploaded mykernel-stage1-full-review.tar.gz
+
+Changes in this milestone:
+1. src/idt.c: each IDT vector 0..255 now points to an explicit handler; vectors 34..255 each have a unique assembly entry and preserve the true vector number.
+2. src/excep.S: retains the CPU-error-code distinction for the configured architectural exceptions, creates unique fallback entries, and aligns the stack before calling C.
+3. src/exception.c: adds CR2 output for page faults; exception handling remains fail-stop by design.
+4. src/timer.c: guards zero frequency and clamps the PIT divisor to a valid 16-bit range.
+5. src/irq_entry.S: aligns the stack before calling C and restores the original interrupt frame.
+6. src/irq.c: removes serial output from IRQ context; timer IRQ only increments ticks and sends EOI.
+7. src/task.h, src/task.c, src/switch.S: adds a small two-task cooperative Ring 0 scheduler with independent stacks and a documented callee-saved context layout.
+8. src/main.c: initializes and starts the two cooperative tasks. Ring 3 remains disabled.
+9. Makefile: links task.o and switch.o; irq.S remains excluded to avoid duplicate/incorrect IRQ symbols.
+
+Build verification:
+- `make clean && make -j2` succeeded in the provided Linux build container with Clang 21.1.8 and LLD 21.1.8.
+- Produced kernel.elf (32-bit wrapper) and kernel64.elf (x86-64 kernel).
+- QEMU runtime verification was NOT performed because qemu-system-x86_64 is not installed in the build container.
+
+Important limitations:
+- This milestone implements COOPERATIVE task switching: each task must call task_yield(). It is not yet timer-preemptive scheduling.
+- Per-task page-table isolation, user-mode tasks, syscall entry, task blocking/sleeping, and robust task reaping are not implemented.
+- The existing boot handoff's fixed address 0x200170 was checked against this build's symbol table: main is at 0x200170. This must be rechecked after code/link order changes.
+- Do not enable Ring 3 yet.
+
+How to test in Termux:
+1. Back up current directory first.
+2. Extract this bundle to a separate directory, not over the working tree.
+3. In the extracted directory run `make clean && make`.
+4. Run `make run` and check serial output for both `[task A] running` and `[task B] running` plus absence of panic/reset.
+5. Only after runtime test passes should changes be copied into the working tree.
+
+Rollback: keep the user's existing tar backups. This bundle does not overwrite the original upload.

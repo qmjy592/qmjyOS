@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include "src/memory.h"
+#include "memory.h"
 
 #define INFO_ADDR 0x10000000U
 #define MAP_ADDR  0x10010000U

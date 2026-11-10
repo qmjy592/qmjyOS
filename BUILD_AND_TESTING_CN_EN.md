@@ -72,9 +72,9 @@ Run:
 make test-memory
 ```
 
-This builds `tests/memory_host_test.c` with `src/memory.c` as a normal host process. The test maps fake Multiboot information and memory-map buffers at low virtual addresses, then checks parsing, range overlap accounting, reservations, allocation, freeing, double-free rejection, reinitialization and malformed-map handling.
+This builds `tests/memory_host_test.c` with `mm/physical/memory.c` as a normal host process. The test maps fake Multiboot information and memory-map buffers at low virtual addresses, then checks parsing, range overlap accounting, reservations, allocation, freeing, double-free rejection, reinitialization and malformed-map handling.
 
-该测试将 `tests/memory_host_test.c` 与 `src/memory.c` 编译为普通主机进程。测试会在低虚拟地址映射伪造的 Multiboot 信息和内存映射缓冲区，然后检查解析、区间重叠计数、保留区间、分配、释放、重复释放拒绝、重新初始化和错误映射处理。
+该测试将 `tests/memory_host_test.c` 与 `mm/physical/memory.c` 编译为普通主机进程。测试会在低虚拟地址映射伪造的 Multiboot 信息和内存映射缓冲区，然后检查解析、区间重叠计数、保留区间、分配、释放、重复释放拒绝、重新初始化和错误映射处理。
 
 The test may return exit code 77 with a SKIP message if the host disallows the requested low-address mappings. SKIP is not the same as PASS; it means the environment prevented the test from running.
 
@@ -86,7 +86,7 @@ Optional UndefinedBehaviorSanitizer test:
 
 ```sh
 gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=undefined \
-  -fno-sanitize-recover=all -I. src/memory.c tests/memory_host_test.c \
+  -fno-sanitize-recover=all -I. mm/physical/memory.c tests/memory_host_test.c \
   -o /tmp/qmjyOS-memory-test-ubsan
 /tmp/qmjyOS-memory-test-ubsan
 ```
@@ -98,9 +98,9 @@ gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=undefined \
 | `make` | Compilation and linking / 编译与链接 | Runtime correctness / 运行正确性 |
 | QEMU boot | Boot path reaches observed output / 启动路径到达实际观察到的输出 | Complete hardware compatibility or security / 完整硬件兼容性或安全性 |
 | Physical allocator host test | Allocator parsing/accounting behavior under harness / 测试框架下分配器解析和计数行为 | Real boot memory-map correctness on every machine / 所有真实机器上的引导内存映射正确性 |
-| `vm_self_test` | Inactive page-table data-structure operations / 未激活页表数据结构操作 | CR3 switching, TLB behavior or isolation / CR3 切换、TLB 行为或隔离 |
+| `vm_self_test` and Ring 3 test | Page-table data-structure checks plus the observed CR3 activation and basic CPL3/syscall round trip / 页表数据结构检查，以及实际观察到的 CR3 激活、CPL3 和系统调用往返 | Complete process isolation, all TLB edge cases or security / 完整进程隔离、所有 TLB 边界情况或安全性 |
 | Cooperative task output | Tasks yield and resume in observed QEMU run / 观察到的 QEMU 运行中任务让出并恢复 | Timer preemption or SMP / 定时器抢占或多核调度 |
-| GDT/TSS initialization message | Initialization path reached the log point / 初始化流程到达日志位置 | A complete, tested Ring 3 transition / 完整且经过测试的 Ring 3 切换 |
+| GDT/TSS and Ring 3 runtime output | GDT/TSS setup and the observed basic privilege transition / GDT/TSS 初始化及实际观察到的基础特权级切换 | Complete user-mode ABI or security audit / 完整用户态 ABI 或安全审计 |
 
 ## 6. Recommended test sequence / 推荐测试顺序
 
@@ -116,8 +116,8 @@ gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=undefined \
    确认定时器中断得到确认且 tick 递增，但不要把它描述为抢占。
 6. Confirm both cooperative tasks make progress and alternate through explicit yields.
    确认两个协作任务都能推进，并通过显式 yield 交替运行。
-7. Keep Ring 3 disabled until page permissions, kernel mappings, NX support, TSS stack switching and exception-frame handling are validated.
-   在页权限、内核映射、NX 支持、TSS 栈切换和异常栈帧处理得到验证前，保持 Ring 3 禁用。
+7. Run the existing basic Ring 3 transition test; continue testing protection faults, TSS stack switching, exception frames and syscall ABI before claiming complete user-mode isolation.
+   运行现有基础 Ring 3 切换测试；在宣称完整用户态隔离前，继续验证保护异常、TSS 栈切换、异常栈帧和系统调用 ABI。
 
 ## 7. Diagnostics to record / 建议记录的诊断信息
 
