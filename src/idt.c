@@ -46,6 +46,7 @@ extern void isr30(void);
 extern void isr31(void);
 extern void irq0(void);
 extern void irq1(void);
+extern void syscall_entry(void);
 extern void isr_unexpected_34(void);
 extern void isr_unexpected_35(void);
 extern void isr_unexpected_36(void);
@@ -536,6 +537,9 @@ void idt_init(void) {
     set_idt_gate(253, (uint64_t)isr_unexpected_253);
     set_idt_gate(254, (uint64_t)isr_unexpected_254);
     set_idt_gate(255, (uint64_t)isr_unexpected_255);
+    /* Ring 3 callable system-call interrupt gate. */
+    set_idt_gate(128, (uint64_t)syscall_entry);
+    idt[128].type_attr = 0xEE;
     idt_ptr.limit = (uint16_t)(sizeof(idt) - 1);
     idt_ptr.base = (uint64_t)idt;
     __asm__ volatile("lidt %0" :: "m"(idt_ptr) : "memory");

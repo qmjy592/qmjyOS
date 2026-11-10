@@ -363,6 +363,13 @@ int mm_alloc_page(uint64_t *out) {
     if (!free_count) return MM_ERR_NO_MEMORY;
     for (size_t r = 0; r < ranges; ++r) {
         uint64_t end = usable[r] + usable_len[r];
+
+            /* RING3_DIRECT_MAP_LIMIT */
+            const uint64_t direct_map_limit = 1ULL << 30;
+            if (usable[r] >= direct_map_limit)
+                continue;
+            if (end > direct_map_limit)
+                end = direct_map_limit;
         for (uint64_t pa = usable[r]; pa < end; pa += MM_PAGE_SIZE) {
             size_t p = (size_t)(pa / MM_PAGE_SIZE);
             if (p < MM_MAX_PAGES && !bit_get(p)) {

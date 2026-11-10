@@ -1,5 +1,8 @@
 #include "paging.h"
 
+static int vm_active;
+
+
 #define VM_TABLE_COUNT 64U
 #define VM_ENTRIES 512U
 #define VM_LARGE_PAGE (1ULL << 7)
@@ -216,6 +219,13 @@ static int walk(uint64_t va, int create, uint64_t flags,
 }
 
 int vm_init(void) {
+    /*
+     * Never destroy page tables while CR3 may still reference them.
+     * A reboot or a dedicated deactivation path is required first.
+     */
+    if (vm_active)
+        return VM_ERR_ACTIVE;
+
     for (size_t i = 0; i < VM_TABLE_COUNT; ++i) {
         zero_table(table_pool[i]);
         table_in_use[i] = 0;
@@ -267,6 +277,17 @@ int vm_map_page(uint64_t va, uint64_t pa, uint64_t flags) {
         return VM_ERR_EXISTS;
     }
     *pte = pa | VM_PRESENT | flags;
+
+    /*
+     * If this address was cached as non-present, or had an older
+     * translation, discard that translation after changing the PTE.
+     */
+    if (vm_active) {
+        status = vm_invalidate_page(va);
+        if (status != VM_OK)
+            return status;
+    }
+
     return VM_OK;
 }
 
@@ -300,6 +321,13 @@ int vm_unmap_page(uint64_t va) {
         parent[parent_index] = 0;
         release_table(child);
     }
+
+    if (vm_active) {
+        status = vm_invalidate_page(va);
+        if (status != VM_OK)
+            return status;
+    }
+
     return VM_OK;
 }
 
@@ -454,4 +482,115 @@ int vm_self_test(void) {
     }
 
     return VM_OK;
+}
+
+
+/*
+ * Runtime CR3 management.
+ * The page-table root is allocated from the kernel's static table pool.
+ * The bootstrap identity map must remain available while this code runs.
+ */
+int vm_is_active(void)
+{
+    return vm_active;
+}
+
+int vm_invalidate_page(uint64_t virtual_address)
+{
+    if (!is_low_canonical(virtual_address))
+        return VM_ERR_ADDRESS;
+
+    if (!vm_active)
+        return VM_OK;
+
+#ifdef VM_HOST_TEST
+    return VM_OK;
+#else
+    __asm__ volatile("invlpg (%0)" :: "r"(virtual_address) : "memory");
+    return VM_OK;
+#endif
+}
+
+int vm_activate(void)
+{
+#ifdef VM_HOST_TEST
+    return VM_ERR_ACTIVE;
+#else
+    uint64_t root = vm_root_physical();
+
+    if (!root || (root & (VM_PAGE_SIZE - 1)))
+        return VM_ERR_CORRUPT;
+
+    if (root >= (1ULL << 30))
+        return VM_ERR_ADDRESS;
+
+    uint64_t current_cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(current_cr3));
+
+    if ((current_cr3 & VM_ADDR_MASK) == root) {
+        vm_active = 1;
+        return VM_OK;
+    }
+
+    __asm__ volatile(
+        "mov %0, %%cr3"
+        :
+        : "r"(root)
+        : "memory"
+    );
+
+    vm_active = 1;
+    return VM_OK;
+#endif
+}
+
+
+/*
+ * Return true only when both CPU NX support and EFER.NXE
+ * are enabled. boot.S enables EFER.NXE when supported.
+ */
+int vm_nx_enabled(void)
+{
+#ifdef VM_HOST_TEST
+    /*
+     * Host tests validate page-table bookkeeping only.
+     * They must not execute privileged x86 instructions.
+     * NX capability is checked by the real kernel build.
+     */
+    return 0;
+#else
+    uint32_t a, b, c, d;
+
+    a = 0x80000000U;
+    __asm__ volatile(
+        "cpuid"
+        : "+a"(a), "=b"(b), "=c"(c), "=d"(d)
+        :
+        : "memory"
+    );
+
+    if (a < 0x80000001U)
+        return 0;
+
+    a = 0x80000001U;
+    __asm__ volatile(
+        "cpuid"
+        : "+a"(a), "=b"(b), "=c"(c), "=d"(d)
+        :
+        : "memory"
+    );
+
+    if (!(d & (1U << 20)))
+        return 0;
+
+    a = 0xC0000080U;
+    __asm__ volatile(
+        "rdmsr"
+        : "=a"(a), "=d"(d)
+        : "c"(a)
+        : "memory"
+    );
+
+    return (a & (1U << 11)) != 0;
+#endif
 }

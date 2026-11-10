@@ -119,11 +119,32 @@ reload_cs:
     wrmsr
 2:
     # Enable long mode. CR0.WP also enforces supervisor write protection.
-    mov $0xC0000080, %ecx
+    /* RING3_NXE_CPU_CHECK: detect extended CPUID NX support */
+    pushl %ebx
+    movl $0x80000000, %eax
+    cpuid
+    cmpl $0x80000001, %eax
+    jb .Lring3_nx_unavailable
+    movl $0x80000001, %eax
+    cpuid
+    btl $20, %edx
+    jnc .Lring3_nx_unavailable
+    popl %ebx
+
+    movl $0xC0000080, %ecx
     rdmsr
-    or $(1 << 8), %eax
+    orl $((1 << 8) | (1 << 11)), %eax
+    wrmsr
+    jmp .Lring3_efer_done
+
+    .Lring3_nx_unavailable:
+    popl %ebx
+    movl $0xC0000080, %ecx
+    rdmsr
+    orl $(1 << 8), %eax
     wrmsr
 
+    .Lring3_efer_done:
     mov %cr0, %eax
     or $0x80010000, %eax
     mov %eax, %cr0

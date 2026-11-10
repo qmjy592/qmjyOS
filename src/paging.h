@@ -26,7 +26,8 @@ enum vm_status {
     VM_ERR_NO_MEMORY = -5,
     VM_ERR_FLAGS = -6,
     VM_ERR_ADDRESS = -7,
-    VM_ERR_CORRUPT = -8
+    VM_ERR_CORRUPT = -8,
+    VM_ERR_ACTIVE = -9
 };
 
 /*
@@ -36,6 +37,12 @@ enum vm_status {
  * an existing 2 MiB mapping into 4 KiB entries while preserving neighboring
  * mappings and their permissions. This module does not load CR3.
  */
+
+/* Runtime page-table activation and TLB management. */
+int vm_activate(void);
+int vm_is_active(void);
+int vm_invalidate_page(uint64_t virtual_address);
+int vm_nx_enabled(void);
 int vm_init(void);
 int vm_map_page(uint64_t virtual_address, uint64_t physical_address, uint64_t flags);
 int vm_unmap_page(uint64_t virtual_address);

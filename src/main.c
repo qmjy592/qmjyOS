@@ -110,6 +110,204 @@ void enter_user_mode(void (*user_func)(void)) {
 
 extern char __kernel64_start, __kernel64_end;
 
+
+
+/* -------------------------------------------------
+ * Ring 3 isolated address space test
+ * ------------------------------------------------- */
+
+#define RING3_CODE_VA  0x0000000040000000ULL
+#define RING3_STACK_VA 0x0000000040001000ULL
+
+extern void ring3_enter(uint64_t user_rsp, uint64_t user_rip);
+extern char user_blob_start[];
+extern char user_blob_end[];
+
+static void ring3_zero_page(uint64_t physical)
+{
+    volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)physical;
+    for (size_t i = 0; i < MM_PAGE_SIZE / sizeof(uint64_t); ++i)
+        p[i] = 0;
+}
+
+/*
+ * Called from syscall_entry on the TSS.RSP0 kernel stack.
+ * RAX=1 is the Ring 3 test-exit request.
+ */
+void ring3_syscall_handler(uint64_t syscall_number)
+{
+    if (syscall_number == 1) {
+        serial_puts("[Ring 3] System call received successfully.\n");
+        serial_puts("[Ring 3] Returning to Ring 0.\n");
+    } else {
+        serial_puts("[Ring 3] Unknown system call.\n");
+    }
+}
+
+static int ring3_prepare_and_run(void)
+{
+    uint64_t code_pa = 0;
+    uint64_t stack_pa = 0;
+    uint64_t query_pa = 0;
+    uint64_t query_flags = 0;
+    int code_mapped = 0;
+    int stack_mapped = 0;
+    int activated = 0;
+    int result = -1;
+
+    const size_t blob_size =
+        (size_t)(user_blob_end - user_blob_start);
+
+    serial_puts("\n[Ring 3] Preparing isolated user address space.\n");
+
+    if (!vm_nx_enabled()) {
+        serial_puts("[Ring 3] ERROR: CPU NX support or EFER.NXE unavailable.\n");
+        return -1;
+    }
+
+    if (blob_size == 0 || blob_size > MM_PAGE_SIZE) {
+        serial_puts("[Ring 3] ERROR: user code size invalid.\n");
+        return -1;
+    }
+
+    /*
+     * Rebuild clean inactive page tables after the paging self-test.
+     */
+    if (vm_init() != VM_OK) {
+        serial_puts("[Ring 3] ERROR: vm_init failed.\n");
+        return -1;
+    }
+
+    if (mm_alloc_page(&code_pa) != MM_OK) {
+        serial_puts("[Ring 3] ERROR: cannot allocate user code page.\n");
+        return -1;
+    }
+
+    if (mm_alloc_page(&stack_pa) != MM_OK) {
+        serial_puts("[Ring 3] ERROR: cannot allocate user stack page.\n");
+        mm_free_page(code_pa);
+        return -1;
+    }
+
+    ring3_zero_page(code_pa);
+    ring3_zero_page(stack_pa);
+
+    /* Copy the position-independent user program to its own page. */
+    {
+        volatile uint8_t *dst = (volatile uint8_t *)(uintptr_t)code_pa;
+        const uint8_t *src = (const uint8_t *)user_blob_start;
+
+        for (size_t i = 0; i < blob_size; ++i)
+            dst[i] = src[i];
+    }
+
+    /*
+     * User code: USER, read-only, executable.
+     * User stack: USER, writable, NX.
+     */
+    if (vm_map_page(RING3_CODE_VA, code_pa, VM_USER) != VM_OK) {
+        serial_puts("[Ring 3] ERROR: code mapping failed.\n");
+        goto cleanup;
+    }
+    code_mapped = 1;
+
+    if (vm_map_page(RING3_STACK_VA, stack_pa,
+                    VM_USER | VM_WRITE | VM_NO_EXECUTE) != VM_OK) {
+        serial_puts("[Ring 3] ERROR: stack mapping failed.\n");
+        goto cleanup;
+    }
+    stack_mapped = 1;
+
+    /* Verify user code mapping. */
+    if (vm_query_page(RING3_CODE_VA, &query_pa, &query_flags) != VM_OK ||
+        query_pa != code_pa ||
+        !(query_flags & VM_USER) ||
+        (query_flags & VM_WRITE) ||
+        (query_flags & VM_NO_EXECUTE)) {
+        serial_puts("[Ring 3] ERROR: code permissions invalid.\n");
+        goto cleanup;
+    }
+
+    /* Verify user stack mapping. */
+    if (vm_query_page(RING3_STACK_VA, &query_pa, &query_flags) != VM_OK ||
+        query_pa != stack_pa ||
+        !(query_flags & VM_USER) ||
+        !(query_flags & VM_WRITE) ||
+        !(query_flags & VM_NO_EXECUTE)) {
+        serial_puts("[Ring 3] ERROR: stack permissions invalid.\n");
+        goto cleanup;
+    }
+
+    /* Verify the kernel identity mapping remains supervisor-only. */
+    if (vm_query_page(0x00200000ULL, &query_pa, &query_flags) != VM_OK ||
+        (query_flags & VM_USER)) {
+        serial_puts("[Ring 3] ERROR: kernel mapping is user-accessible.\n");
+        goto cleanup;
+    }
+
+    serial_puts("[Ring 3] User code page: RX, U/S=1.\n");
+    serial_puts("[Ring 3] User stack page: RW/NX, U/S=1.\n");
+    serial_puts("[Ring 3] Kernel identity mapping: supervisor-only.\n");
+
+    /*
+     * All mappings and permissions are ready.
+     * vm_activate switches CR3 only after the kernel identity map exists.
+     */
+    if (vm_activate() != VM_OK) {
+        serial_puts("[Ring 3] ERROR: CR3 activation failed.\n");
+        goto cleanup;
+    }
+    activated = 1;
+
+    serial_puts("[Ring 3] CR3 activated.\n");
+    serial_puts("[Ring 3] Entering CPL3.\n");
+
+    /*
+     * The user program executes:
+     *     mov $1, %eax
+     *     int $0x80
+     *
+     * syscall_entry restores the saved Ring 0 stack and returns here.
+     */
+    ring3_enter(RING3_STACK_VA + MM_PAGE_SIZE - 16,
+                RING3_CODE_VA);
+
+    serial_puts("[Ring 3] Returned to Ring 0 successfully.\n");
+    result = 0;
+
+cleanup:
+    /*
+     * Once CR3 is active, vm_unmap_page invalidates the affected TLB entry.
+     * Keep the active page-table root; the scheduler continues using it.
+     */
+    if (stack_mapped) {
+        if (vm_unmap_page(RING3_STACK_VA) != VM_OK) {
+            serial_puts("[Ring 3] WARNING: stack unmap failed.\n");
+            result = -1;
+        }
+    }
+
+    if (code_mapped) {
+        if (vm_unmap_page(RING3_CODE_VA) != VM_OK) {
+            serial_puts("[Ring 3] WARNING: code unmap failed.\n");
+            result = -1;
+        }
+    }
+
+    if (stack_pa && mm_free_page(stack_pa) != MM_OK) {
+        serial_puts("[Ring 3] WARNING: stack page release failed.\n");
+        result = -1;
+    }
+
+    if (code_pa && mm_free_page(code_pa) != MM_OK) {
+        serial_puts("[Ring 3] WARNING: code page release failed.\n");
+        result = -1;
+    }
+
+    (void)activated;
+    return result;
+}
+
 void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
     serial_init();
     serial_puts("Hello, x86_64 kernel!\n");
@@ -141,7 +339,17 @@ void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
     init_gdt_and_tss();
 
     serial_puts("GDT and TSS initialized.\n");
-    serial_puts("Ring 3 test temporarily disabled: page permissions are not ready.\n");
+
+    /*
+     * Run the isolated Ring 3 test before starting the cooperative
+     * Ring 0 scheduler. The scheduler itself remains intact.
+     */
+    if (ring3_prepare_and_run() == 0) {
+        serial_puts("[Ring 3] Basic privilege transition: PASS.\n");
+    } else {
+        serial_puts("[Ring 3] Test did not complete successfully.\n");
+    }
+
     task_init();
     serial_puts("Starting cooperative Ring 0 scheduler.\n");
     __asm__ volatile("sti" ::: "memory");

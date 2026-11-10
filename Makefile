@@ -9,7 +9,7 @@ LDFLAGS_32 := -m elf_i386 -T linker32.ld -nostdlib -static
 LDFLAGS_64 := -m elf_x86_64 -T linker64.ld -nostdlib -static
 
 OBJS_32 := src/boot.o
-OBJS_64 := src/entry64.o src/gdt_load.o src/main.o src/serial.o src/idt.o src/exception.o src/excep.o src/pic.o src/timer.o src/irq.o src/irq_entry.o src/paging.o src/memory.o src/task.o src/switch.o
+OBJS_64 := src/entry64.o src/gdt_load.o src/ring3_entry.o src/main.o src/serial.o src/idt.o src/exception.o src/excep.o src/pic.o src/timer.o src/irq.o src/irq_entry.o src/paging.o src/memory.o src/task.o src/switch.o
 
 .PHONY: all run clean test-memory test-paging clean-memory-test
 
@@ -73,7 +73,7 @@ test-paging: $(HOST_PAGING_TEST)
 	./$(HOST_PAGING_TEST)
 
 $(HOST_PAGING_TEST): tests/paging_host_test.c src/paging.c src/paging.h
-	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -o $@ tests/paging_host_test.c src/paging.c
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -DVM_HOST_TEST -I. -o $@ tests/paging_host_test.c src/paging.c
 
 .PHONY: clean-memory-test
 clean-memory-test:
@@ -86,3 +86,7 @@ clean-memory-test:
 .PHONY: test-boot
 test-boot: kernel.elf kernel64.elf kernel64.bin
 	bash tools/verify_boot.sh
+
+
+src/ring3_entry.o: src/ring3_entry.S
+	$(CC) $(CFLAGS_64) -c -o $@ $<
