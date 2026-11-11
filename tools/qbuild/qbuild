@@ -211,6 +211,7 @@ run_test() {
         test-paging \
         test-vfs \
         test-ramfs \
+        test-qfs \
         test-interfaces \
         test-boot
 }

@@ -35,6 +35,10 @@ SOURCES_64 = {
     "KERNEL_CORE": [
         ("kernel/core/main.c", "kernel/core/main.o"),
     ],
+    "DRIVER_BLOCK": [
+        ("drivers/block/block.c", "drivers/block/block.o"),
+        ("drivers/block/ide_pio.c", "drivers/block/ide_pio.o"),
+    ],
     "DRIVER_SERIAL": [
         ("drivers/serial/serial.c", "drivers/serial/serial.o"),
     ],
@@ -49,6 +53,11 @@ SOURCES_64 = {
     ],
     "FS_VFS": [
         ("fs/vfs/vfs.c", "fs/vfs/vfs.o"),
+    ],
+    "FS_QFS": [
+        ("fs/partition/mbr.c", "fs/partition/mbr.o"),
+        ("fs/qfs/qfs.c", "fs/qfs/qfs.o"),
+        ("fs/core/fs_storage.c", "fs/core/fs_storage.o"),
     ],
     "FS_RAMFS": [
         ("fs/ramfs/ramfs.c", "fs/ramfs/ramfs.o"),

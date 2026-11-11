@@ -9,6 +9,7 @@ HOST_MEMORY_TEST := .memory-host-test
 HOST_PAGING_TEST := .paging-host-test
 HOST_VFS_TEST := .vfs-host-test
 HOST_RAMFS_TEST := .ramfs-host-test
+HOST_QFS_TEST := .qfs-host-test
 
 CPPFLAGS := \
 -Iinclude \
@@ -36,7 +37,7 @@ MODULE_MK := build/modules.mk
 -include $(MODULE_MK)
 
 .PHONY: all run clean \
-        test-memory test-paging test-vfs test-ramfs test-boot \
+        test-memory test-paging test-vfs test-ramfs test-qfs test-boot \
         clean-memory-test module-plan
 
 all: kernel.elf
@@ -77,7 +78,7 @@ clean:
 	rm -f $(OBJS_32:.o=.d) $(OBJS_64:.o=.d)
 	rm -f kernel.elf kernel64.elf kernel64.bin kernel64.o
 	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
-	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST)
+	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST) $(HOST_QFS_TEST)
 	rm -f $(HOST_INTERFACE_TEST)
 	rm -f $(MODULE_MK)
 
@@ -102,8 +103,14 @@ $(HOST_VFS_TEST): tests/filesystem/vfs_host_test.c fs/vfs/vfs.c fs/vfs/vfs.h
 test-ramfs: $(HOST_RAMFS_TEST)
 	./$(HOST_RAMFS_TEST)
 
-$(HOST_RAMFS_TEST): tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c
-	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -o $@ tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c
+test-qfs: $(HOST_QFS_TEST)
+	./$(HOST_QFS_TEST)
+
+$(HOST_QFS_TEST): tests/filesystem/qfs_host_test.c fs/qfs/qfs.c fs/vfs/vfs.c drivers/block/block.c
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Iinclude -o $@ tests/filesystem/qfs_host_test.c fs/qfs/qfs.c fs/vfs/vfs.c drivers/block/block.c
+
+$(HOST_RAMFS_TEST): tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c fs/qfs/qfs.c drivers/block/block.c
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Iinclude -o $@ tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c fs/qfs/qfs.c drivers/block/block.c
 
 clean-memory-test:
 	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)

@@ -33,6 +33,7 @@ DRIVER_AUDIO=planned
 DRIVER_BLUETOOTH=planned
 FS_VFS=experimental
 FS_RAMFS=experimental
+FS_QFS=experimental
 FS_DEVFS=planned
 FS_PROCFS=planned
 FS_SYSFS=planned

@@ -57,4 +57,13 @@ qm_status_t qm_block_write(
     const void *buffer
 );
 
+qm_status_t qm_block_flush(
+    qm_block_device_id_t id
+);
+
+qm_status_t qm_block_get_info(
+    qm_block_device_id_t id,
+    qm_block_device_info_t *out_info
+);
+
 #endif

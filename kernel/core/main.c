@@ -6,6 +6,9 @@
 #include "paging.h"
 #include "memory.h"
 #include "../../fs/core/fs_init.h"
+#include "../../fs/qfs/qfs.h"
+#include "../../fs/partition/mbr.h"
+#include "../../drivers/block/ide_pio.h"
 #include <stdint.h>
 
 extern void gdt_load_and_reload_cs(const void *gdtr);
@@ -309,6 +312,136 @@ cleanup:
     return result;
 }
 
+
+static void serial_put_hex32(uint32_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    char out[11] = "0x00000000";
+    for (int i = 0; i < 8; ++i) {
+        out[9 - i] = digits[value & 0xFU];
+        value >>= 4;
+    }
+    out[10] = '\0';
+    serial_puts(out);
+}
+
+static void serial_dump_multiboot_map(uint32_t magic, uint32_t info_addr) {
+    serial_puts("[MM DEBUG] magic=");
+    serial_put_hex32(magic);
+    serial_puts(" info=");
+    serial_put_hex32(info_addr);
+    serial_puts("\\n");
+
+    if (!info_addr || (uint64_t)info_addr + 88 > (1ULL << 30)) {
+        serial_puts("[MM DEBUG] info address outside mapped range.\\n");
+        return;
+    }
+
+    const volatile uint32_t *info =
+        (const volatile uint32_t *)(uintptr_t)info_addr;
+
+    uint32_t flags = info[0];
+    uint32_t mmap_length = info[11];
+    uint32_t mmap_addr = info[12];
+
+    serial_puts("[MM DEBUG] flags=");
+    serial_put_hex32(flags);
+    serial_puts(" mmap_addr=");
+    serial_put_hex32(mmap_addr);
+    serial_puts(" mmap_length=");
+    serial_put_hex32(mmap_length);
+    serial_puts("\\n");
+
+    if (!(flags & (1U << 6)) || !mmap_addr || !mmap_length ||
+        (uint64_t)mmap_addr + mmap_length > (1ULL << 30)) {
+        serial_puts("[MM DEBUG] Multiboot mmap header invalid.\\n");
+        return;
+    }
+
+    const volatile uint32_t *entry =
+        (const volatile uint32_t *)(uintptr_t)mmap_addr;
+    uint32_t count = mmap_length / 24;
+    if (count > 4) count = 4;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const volatile uint32_t *e =
+            (const volatile uint32_t *)(uintptr_t)(mmap_addr + i * 24);
+
+        serial_puts("[MM DEBUG] entry ");
+        serial_put_hex32(i);
+        serial_puts(" size=");
+        serial_put_hex32(e[0]);
+        serial_puts(" base_hi=");
+        serial_put_hex32(e[2]);
+        serial_puts(" base_lo=");
+        serial_put_hex32(e[1]);
+        serial_puts(" len_hi=");
+        serial_put_hex32(e[4]);
+        serial_puts(" len_lo=");
+        serial_put_hex32(e[3]);
+        serial_puts(" type=");
+        serial_put_hex32(e[5]);
+        serial_puts("\\n");
+    }
+    (void)entry;
+}
+
+
+/* -------------------------------------------------
+ * IDE + MBR + QFS storage initialization
+ * Uses the secondary IDE device to avoid modifying
+ * the QBoot system disk.
+ * ------------------------------------------------- */
+
+static void storage_init(void)
+{
+    qm_partition_t partitions[4];
+    qm_u32_t partition_count = 0;
+    qm_u32_t i;
+    int result;
+
+    serial_puts("\n[Storage] Initializing IDE block devices.\n");
+
+    result = qm_ide_pio_init();
+
+    if (result != 0) {
+        serial_puts("[Storage] IDE initialization failed.\n");
+        return;
+    }
+
+    serial_puts("[Storage] IDE controller initialized.\n");
+
+    result = qm_mbr_scan(
+        QM_IDE_PRIMARY_SLAVE,
+        partitions,
+        4,
+        &partition_count
+    );
+
+    if (result != 0) {
+        serial_puts("[Storage] Cannot read secondary disk MBR.\n");
+        return;
+    }
+
+    if (partition_count == 0) {
+        serial_puts("[Storage] No partition found on secondary disk.\n");
+        return;
+    }
+
+    serial_puts("[Storage] MBR partition table detected.\n");
+
+    for (i = 0; i < partition_count; ++i) {
+        result = qfs_mount_at(&partitions[i], "/disk");
+
+        if (result == VFS_OK) {
+            serial_puts("[Storage] QFS mounted at /disk.\n");
+            return;
+        }
+    }
+
+    serial_puts("[Storage] No valid QFS partition found.\n");
+    serial_puts("[Storage] Disk was NOT formatted or modified.\n");
+}
+
 void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
     serial_init();
     if (fs_init() == 0) {
@@ -318,6 +451,7 @@ void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
         serial_puts("[FS] ERROR: filesystem initialization failed.\n");
     }
     serial_puts("Hello, x86_64 kernel!\n");
+    serial_dump_multiboot_map(multiboot_magic, multiboot_info_addr);
 
     int mm_status = mm_init_from_multiboot(multiboot_magic, multiboot_info_addr,
         (uint64_t)(uintptr_t)&__kernel64_start, (uint64_t)(uintptr_t)&__kernel64_end);
@@ -329,9 +463,14 @@ void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
             serial_puts("Physical page allocator self-test: FAIL.\n");
         }
     } else {
+        serial_puts("[MM DEBUG] mm_init_from_multiboot status=");
+        serial_put_hex32((uint32_t)mm_status);
+        serial_puts("\n");
         serial_puts("Physical page allocator: unavailable (Multiboot map validation failed).\n");
         serial_puts("Physical page allocator self-test: SKIPPED (allocator unavailable).\n");
     }
+
+    storage_init();
 
     if (vm_self_test() == 0) {
         serial_puts("Paging manager self-test: PASS (inactive page tables).\n");
