@@ -213,6 +213,7 @@ run_test() {
         test-ramfs \
         test-qfs \
         test-interfaces \
+        test-services \
         test-boot
 }
 

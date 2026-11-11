@@ -133,3 +133,60 @@ test-interfaces: $(HOST_INTERFACE_TEST)
 
 $(HOST_INTERFACE_TEST): tests/interfaces/interface_header_test.c
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $<
+
+# ============================================================
+# QMjyOS Foundation Services Host Tests
+# ============================================================
+
+.RECIPEPREFIX := >
+
+HOST_QM_TEST_DIR := build/tests
+HOST_QM_TEST_INCLUDES := -I. -Iinclude \
+-Iservices/manager -Iservices/registry -Iservices/logging \
+-Iservices/config -Iipc/message -Iinit/startup \
+-Isecurity/capability
+
+HOST_QM_TESTS := \
+$(HOST_QM_TEST_DIR)/test_qm_service \
+$(HOST_QM_TEST_DIR)/test_qm_ipc \
+$(HOST_QM_TEST_DIR)/test_qm_registry \
+$(HOST_QM_TEST_DIR)/test_qm_log \
+$(HOST_QM_TEST_DIR)/test_qm_init \
+$(HOST_QM_TEST_DIR)/test_qm_cap \
+$(HOST_QM_TEST_DIR)/test_qm_service_config \
+$(HOST_QM_TEST_DIR)/test_qm_system_integration
+
+.PHONY: test-services clean-services
+
+test-services: $(HOST_QM_TESTS)
+>@set -e; for test in $(HOST_QM_TESTS); do echo "===== $$test ====="; ./$$test; done
+
+$(HOST_QM_TEST_DIR):
+>mkdir -p $@
+
+$(HOST_QM_TEST_DIR)/test_qm_service: tests/services/test_qm_service.c services/manager/qm_service.c | $(HOST_QM_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) $(HOST_QM_TEST_INCLUDES) -o $@ $^
+
+$(HOST_QM_TEST_DIR)/test_qm_ipc: tests/ipc/test_qm_ipc.c ipc/message/qm_ipc.c | $(HOST_QM_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) $(HOST_QM_TEST_INCLUDES) -o $@ $^
+
+$(HOST_QM_TEST_DIR)/test_qm_registry: tests/services/test_qm_registry.c services/registry/qm_registry.c | $(HOST_QM_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) $(HOST_QM_TEST_INCLUDES) -o $@ $^
+
+$(HOST_QM_TEST_DIR)/test_qm_log: tests/services/test_qm_log.c services/logging/qm_log.c | $(HOST_QM_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) $(HOST_QM_TEST_INCLUDES) -o $@ $^
+
+$(HOST_QM_TEST_DIR)/test_qm_init: tests/services/test_qm_init.c init/startup/qm_init.c | $(HOST_QM_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) $(HOST_QM_TEST_INCLUDES) -o $@ $^
+
+$(HOST_QM_TEST_DIR)/test_qm_cap: tests/security/test_qm_cap.c security/capability/qm_cap.c | $(HOST_QM_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) $(HOST_QM_TEST_INCLUDES) -o $@ $^
+
+$(HOST_QM_TEST_DIR)/test_qm_service_config: tests/services/test_qm_service_config.c services/config/qm_service_config.c services/manager/qm_service.c | $(HOST_QM_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) $(HOST_QM_TEST_INCLUDES) -o $@ $^
+
+$(HOST_QM_TEST_DIR)/test_qm_system_integration: tests/services/test_qm_system_integration.c services/manager/qm_service.c ipc/message/qm_ipc.c services/registry/qm_registry.c services/logging/qm_log.c init/startup/qm_init.c security/capability/qm_cap.c services/config/qm_service_config.c | $(HOST_QM_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) $(HOST_QM_TEST_INCLUDES) -o $@ $^
+
+clean-services:
+>rm -f $(HOST_QM_TESTS)

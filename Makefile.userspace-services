@@ -1,0 +1,60 @@
+.RECIPEPREFIX := >
+
+HOST_CC ?= clang
+AR := $(shell command -v llvm-ar 2>/dev/null || command -v ar 2>/dev/null)
+
+CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -g
+INCLUDES := -I. -Iinclude -Iservices/manager -Iservices/registry -Iservices/logging -Iservices/config -Iipc/message -Iinit/startup -Isecurity/capability
+
+BUILD_DIR := build/userspace-services
+OBJECT_DIR := $(BUILD_DIR)/objects
+LIBRARY := $(BUILD_DIR)/libqmjy_foundation_services.a
+
+SOURCES := \
+ipc/message/qm_ipc.c \
+services/manager/qm_service.c \
+services/registry/qm_registry.c \
+services/logging/qm_log.c \
+services/config/qm_service_config.c \
+init/startup/qm_init.c \
+security/capability/qm_cap.c
+
+OBJECTS := $(patsubst %.c,$(OBJECT_DIR)/%.o,$(SOURCES))
+DEPS := $(OBJECTS:.o=.d)
+
+.PHONY: all library verify test clean list
+
+all: library
+
+library: $(LIBRARY)
+
+$(LIBRARY): $(OBJECTS)
+>mkdir -p $(dir $@)
+>$(AR) rcs $@ $(OBJECTS)
+>echo "[OK] 用户空间基础服务静态库生成成功"
+>echo "[LIB] $@"
+
+$(OBJECT_DIR)/%.o: %.c
+>mkdir -p $(dir $@)
+>echo "[CC] $<"
+>$(HOST_CC) $(CFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
+
+verify: library
+>echo "========== 静态库成员 =========="
+>$(AR) t $(LIBRARY)
+>echo
+>echo "========== 内核隔离检查 =========="
+>python3 -c 'from pathlib import Path; p=Path("build/modules.mk").read_text(); line=next((x for x in p.splitlines() if x.startswith("OBJS_64 :=")), ""); names=("qm_ipc.user.o","qm_service.user.o","qm_registry.user.o","qm_log.user.o","qm_service_config.user.o","qm_init.user.o","qm_cap.user.o"); bad=[n for n in names if n in line]; assert not bad, "用户空间对象混入 OBJS_64: "+str(bad); print("[PASS] 用户空间对象没有进入内核 OBJS_64")'
+
+test: verify
+>$(MAKE) test-services
+>echo "[PASS] 用户空间基础服务测试完成"
+
+list:
+>echo "源码：$(SOURCES)"
+>echo "输出：$(LIBRARY)"
+
+clean:
+>rm -rf $(BUILD_DIR)
+
+-include $(DEPS)
