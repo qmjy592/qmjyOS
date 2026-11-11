@@ -81,6 +81,7 @@ clean:
 	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST) $(HOST_QFS_TEST)
 	rm -f $(HOST_INTERFACE_TEST)
 	rm -f $(MODULE_MK)
+	rm -rf build/qboot
 
 test-memory: $(HOST_MEMORY_TEST)
 	./$(HOST_MEMORY_TEST)
@@ -117,8 +118,9 @@ clean-memory-test:
 	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST)
 	rm -f $(HOST_INTERFACE_TEST)
 
-test-boot: kernel.elf kernel64.elf kernel64.bin
+test-boot: kernel.elf kernel64.elf kernel64.bin qboot-bios
 	bash tools/verify_boot.sh
+	bash tools/qboot/test_bios_boot.sh
 
 -include $(OBJS_32:.o=.d)
 -include $(OBJS_64:.o=.d)
@@ -190,3 +192,12 @@ $(HOST_QM_TEST_DIR)/test_qm_system_integration: tests/services/test_qm_system_in
 
 clean-services:
 >rm -f $(HOST_QM_TESTS)
+
+# QBoot BIOS disk image and real BIOS boot validation.
+.PHONY: qboot-bios test-qboot-bios
+
+qboot-bios: kernel64.bin
+>bash tools/qboot/build_bios_image.sh
+
+test-qboot-bios: qboot-bios
+>bash tools/qboot/test_bios_boot.sh
