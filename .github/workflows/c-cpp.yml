@@ -1,0 +1,32 @@
+name: qmjyOS CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+
+    - name: 安装交叉编译工具链
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang lld llvm make qemu-system-x86
+
+    - name: 编译内核 (Make)
+      run: make -j4
+
+    - name: 物理内存分配器测试
+      run: make test-memory
+
+    - name: 分页管理器测试
+      run: make test-paging
+
+    - name: 启动链静态检查
+      run: make test-boot
