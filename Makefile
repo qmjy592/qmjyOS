@@ -78,6 +78,7 @@ clean:
 	rm -f kernel.elf kernel64.elf kernel64.bin kernel64.o
 	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
 	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST)
+	rm -f $(HOST_INTERFACE_TEST)
 	rm -f $(MODULE_MK)
 
 test-memory: $(HOST_MEMORY_TEST)
@@ -107,9 +108,21 @@ $(HOST_RAMFS_TEST): tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ram
 clean-memory-test:
 	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
 	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST)
+	rm -f $(HOST_INTERFACE_TEST)
 
 test-boot: kernel.elf kernel64.elf kernel64.bin
 	bash tools/verify_boot.sh
 
 -include $(OBJS_32:.o=.d)
 -include $(OBJS_64:.o=.d)
+
+# Public interface header compilation test.
+HOST_INTERFACE_TEST := .interface-header-test
+
+.PHONY: test-interfaces
+
+test-interfaces: $(HOST_INTERFACE_TEST)
+	./$(HOST_INTERFACE_TEST)
+
+$(HOST_INTERFACE_TEST): tests/interfaces/interface_header_test.c
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $<
