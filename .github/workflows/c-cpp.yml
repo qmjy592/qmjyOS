@@ -2,31 +2,107 @@ name: qmjyOS CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   pull_request:
-    branches: [ "main" ]
+    branches:
+      - main
+
+# Cancel outdated runs for the same branch or pull request.
+concurrency:
+  group: qmjyOS-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The workflow only needs to read repository contents.
+permissions:
+  contents: read
 
 jobs:
-  build-and-test:
+  code-and-config:
+    name: Code and QBuild validation
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-    - name: 检出代码
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: 安装交叉编译工具链
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang lld llvm make qemu-system-x86
+      - name: Check shell script syntax
+        run: |
+          sh -n tools/qbuild/qbuild
+          bash -n tools/verify_boot.sh
 
-    - name: 编译内核 (Make)
-      run: make -j4
+      - name: Check Python syntax
+        run: |
+          python3 -m py_compile tools/qbuild/module_plan.py
 
-    - name: 物理内存分配器测试
-      run: make test-memory
+      - name: Validate QBuild configuration
+        run: |
+          sh tools/qbuild/qbuild config \
+            --arch x86_64 \
+            --boot bios \
+            --jobs 4
 
-    - name: 分页管理器测试
-      run: make test-paging
+      - name: Inspect QBuild modules and dependencies
+        run: |
+          sh tools/qbuild/qbuild modules \
+            --arch x86_64 \
+            --boot bios
+          sh tools/qbuild/qbuild deps \
+            --arch x86_64 \
+            --boot bios
 
-    - name: 启动链静态检查
-      run: make test-boot
+      - name: Validate QBuild dependency plan
+        run: |
+          sh tools/qbuild/qbuild plan \
+            --arch x86_64 \
+            --boot bios \
+            --jobs 4
+
+  build-and-test:
+    name: x86_64 BIOS build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - code-and-config
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            lld \
+            llvm \
+            make \
+            python3 \
+            qemu-system-x86
+
+      - name: Build complete kernel with QBuild
+        run: |
+          sh tools/qbuild/qbuild build \
+            --arch x86_64 \
+            --boot bios \
+            --jobs 4
+
+      - name: Run complete QBuild test suite
+        run: |
+          sh tools/qbuild/qbuild test \
+            --arch x86_64 \
+            --boot bios \
+            --jobs 4
+
+      - name: Upload kernel build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmjyOS-x86_64-bios-kernel
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            kernel.elf
+            kernel64.elf
+            kernel64.bin
