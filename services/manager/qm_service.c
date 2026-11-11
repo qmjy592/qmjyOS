@@ -1,6 +1,15 @@
 #include "qm_service.h"
 
 static qm_service_t g_services[QM_SERVICE_MAX];
+
+/*
+ * Dependency names are owned by the manager.
+ * The public qm_service_t layout remains unchanged.
+ */
+static char g_dependency_names[
+    QM_SERVICE_MAX
+][QM_SERVICE_DEPS_MAX][QM_SERVICE_NAME_MAX];
+
 static size_t g_service_count;
 
 static size_t qm_strlen(const char *s)
@@ -27,6 +36,7 @@ static int qm_strcmp(const char *a, const char *b)
         if (a[i] != b[i])
             return (unsigned char)a[i] -
                    (unsigned char)b[i];
+
         ++i;
     }
 
@@ -68,6 +78,12 @@ static int qm_service_find(const char *name)
     return -1;
 }
 
+static int qm_service_is_active(const qm_service_t *service)
+{
+    return service->state == QM_SERVICE_RUNNING ||
+           service->state == QM_SERVICE_FAILED;
+}
+
 static int qm_service_dependencies_ready(
     const qm_service_t *service
 )
@@ -89,10 +105,79 @@ static int qm_service_dependencies_ready(
     return QM_SERVICE_OK;
 }
 
+/*
+ * Stable Kahn topological ordering.
+ * When multiple services are ready, registration order wins.
+ */
+static int qm_service_build_order(
+    size_t order[QM_SERVICE_MAX],
+    size_t *out_count
+)
+{
+    uint8_t indegree[QM_SERVICE_MAX] = {0};
+    uint8_t selected[QM_SERVICE_MAX] = {0};
+
+    size_t i;
+    size_t j;
+    size_t k;
+    size_t count = 0;
+
+    if (!out_count)
+        return QM_SERVICE_ERR_INVALID;
+
+    for (i = 0; i < g_service_count; ++i) {
+        indegree[i] = g_services[i].dependency_count;
+
+        for (j = 0; j < g_services[i].dependency_count; ++j) {
+            if (qm_service_find(
+                    g_services[i].dependencies[j]) < 0) {
+                return QM_SERVICE_ERR_DEPENDENCY;
+            }
+        }
+    }
+
+    while (count < g_service_count) {
+        size_t pick = g_service_count;
+
+        for (i = 0; i < g_service_count; ++i) {
+            if (!selected[i] && indegree[i] == 0) {
+                pick = i;
+                break;
+            }
+        }
+
+        if (pick == g_service_count)
+            return QM_SERVICE_ERR_CYCLE;
+
+        selected[pick] = 1;
+        order[count++] = pick;
+
+        for (i = 0; i < g_service_count; ++i) {
+            if (selected[i])
+                continue;
+
+            for (k = 0; k < g_services[i].dependency_count; ++k) {
+                if (qm_strcmp(
+                        g_services[i].dependencies[k],
+                        g_services[pick].name) == 0) {
+                    if (indegree[i] > 0)
+                        --indegree[i];
+
+                    break;
+                }
+            }
+        }
+    }
+
+    *out_count = count;
+    return QM_SERVICE_OK;
+}
+
 void qm_service_manager_init(void)
 {
     size_t i;
     size_t j;
+    size_t k;
 
     for (i = 0; i < QM_SERVICE_MAX; ++i) {
         g_services[i].name[0] = '\0';
@@ -102,8 +187,12 @@ void qm_service_manager_init(void)
         g_services[i].state = QM_SERVICE_EMPTY;
         g_services[i].last_error = 0;
 
-        for (j = 0; j < QM_SERVICE_DEPS_MAX; ++j)
+        for (j = 0; j < QM_SERVICE_DEPS_MAX; ++j) {
             g_services[i].dependencies[j] = NULL;
+
+            for (k = 0; k < QM_SERVICE_NAME_MAX; ++k)
+                g_dependency_names[i][j][k] = '\0';
+        }
     }
 
     g_service_count = 0;
@@ -119,6 +208,7 @@ int qm_service_register(
 {
     qm_service_t *service;
     size_t i;
+    size_t j;
 
     if (!name || !name[0] || !start)
         return QM_SERVICE_ERR_INVALID;
@@ -142,8 +232,19 @@ int qm_service_register(
         if (!dependencies[i] || !dependencies[i][0])
             return QM_SERVICE_ERR_INVALID;
 
+        if (qm_strlen(dependencies[i]) >= QM_SERVICE_NAME_MAX)
+            return QM_SERVICE_ERR_INVALID;
+
         if (qm_strcmp(name, dependencies[i]) == 0)
             return QM_SERVICE_ERR_CYCLE;
+
+        for (j = 0; j < i; ++j) {
+            if (qm_strcmp(
+                    dependencies[i],
+                    dependencies[j]) == 0) {
+                return QM_SERVICE_ERR_DUPLICATE;
+            }
+        }
     }
 
     service = &g_services[g_service_count];
@@ -160,11 +261,20 @@ int qm_service_register(
     service->state = QM_SERVICE_REGISTERED;
     service->last_error = 0;
 
-    for (i = 0; i < QM_SERVICE_DEPS_MAX; ++i)
+    for (i = 0; i < QM_SERVICE_DEPS_MAX; ++i) {
         service->dependencies[i] = NULL;
 
-    for (i = 0; i < dependency_count; ++i)
-        service->dependencies[i] = dependencies[i];
+        if (i < dependency_count) {
+            qm_strcopy(
+                g_dependency_names[g_service_count][i],
+                QM_SERVICE_NAME_MAX,
+                dependencies[i]
+            );
+
+            service->dependencies[i] =
+                g_dependency_names[g_service_count][i];
+        }
+    }
 
     ++g_service_count;
 
@@ -191,6 +301,10 @@ int qm_service_start(const char *name)
         service->state == QM_SERVICE_STOPPING)
         return QM_SERVICE_ERR_STATE;
 
+    if (service->state != QM_SERVICE_REGISTERED &&
+        service->state != QM_SERVICE_STOPPED)
+        return QM_SERVICE_ERR_STATE;
+
     result = qm_service_dependencies_ready(service);
 
     if (result != QM_SERVICE_OK) {
@@ -214,6 +328,27 @@ int qm_service_start(const char *name)
     return QM_SERVICE_OK;
 }
 
+static int qm_service_has_active_dependents(size_t target)
+{
+    size_t i;
+    uint8_t j;
+
+    for (i = 0; i < g_service_count; ++i) {
+        if (i == target || !qm_service_is_active(&g_services[i]))
+            continue;
+
+        for (j = 0; j < g_services[i].dependency_count; ++j) {
+            if (qm_strcmp(
+                    g_services[i].dependencies[j],
+                    g_services[target].name) == 0) {
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 int qm_service_stop(const char *name)
 {
     int index;
@@ -235,6 +370,9 @@ int qm_service_stop(const char *name)
         service->state != QM_SERVICE_FAILED)
         return QM_SERVICE_ERR_STATE;
 
+    if (qm_service_has_active_dependents((size_t)index))
+        return QM_SERVICE_ERR_IN_USE;
+
     service->state = QM_SERVICE_STOPPING;
 
     if (service->stop) {
@@ -255,98 +393,63 @@ int qm_service_stop(const char *name)
 
 int qm_service_start_all(void)
 {
-    size_t completed = 0;
-    size_t pass;
+    size_t order[QM_SERVICE_MAX];
+    size_t count = 0;
     size_t i;
-    int progress;
     int result;
 
-    /*
-     * Each successful pass starts services whose
-     * dependencies are already running.
-     */
-    for (pass = 0; pass < g_service_count; ++pass) {
-        progress = 0;
+    result = qm_service_build_order(order, &count);
 
-        for (i = 0; i < g_service_count; ++i) {
-            qm_service_t *service = &g_services[i];
+    if (result != QM_SERVICE_OK)
+        return result;
 
-            if (service->state == QM_SERVICE_RUNNING) {
-                continue;
-            }
+    for (i = 0; i < count; ++i) {
+        qm_service_t *service = &g_services[order[i]];
 
-            if (service->state != QM_SERVICE_REGISTERED &&
-                service->state != QM_SERVICE_STOPPED) {
-                continue;
-            }
+        if (service->state == QM_SERVICE_RUNNING)
+            continue;
 
-            result = qm_service_dependencies_ready(service);
-
-            if (result != QM_SERVICE_OK)
-                continue;
-
-            result = qm_service_start(service->name);
-
-            if (result == QM_SERVICE_OK) {
-                ++completed;
-                progress = 1;
-            }
+        if (service->state != QM_SERVICE_REGISTERED &&
+            service->state != QM_SERVICE_STOPPED) {
+            return QM_SERVICE_ERR_STATE;
         }
 
-        if (!progress)
-            break;
+        result = qm_service_start(service->name);
+
+        if (result != QM_SERVICE_OK)
+            return result;
     }
 
-    /*
-     * Verify that all registered services are running.
-     */
-    for (i = 0; i < g_service_count; ++i) {
-        if (g_services[i].state != QM_SERVICE_RUNNING)
-            return QM_SERVICE_ERR_DEPENDENCY;
-    }
-
-    (void)completed;
     return QM_SERVICE_OK;
 }
 
 int qm_service_stop_all(void)
 {
-    size_t remaining = g_service_count;
-    size_t pass;
+    size_t order[QM_SERVICE_MAX];
+    size_t count = 0;
     size_t i;
-    int progress;
-    int first_error = QM_SERVICE_OK;
     int result;
+    int first_error = QM_SERVICE_OK;
 
-    /*
-     * Stop in reverse registration order.
-     * Callers should register dependencies first.
-     */
-    for (pass = 0; pass < g_service_count; ++pass) {
-        progress = 0;
+    result = qm_service_build_order(order, &count);
 
-        for (i = g_service_count; i > 0; --i) {
-            qm_service_t *service = &g_services[i - 1];
+    if (result != QM_SERVICE_OK)
+        return result;
 
-            if (service->state != QM_SERVICE_RUNNING &&
-                service->state != QM_SERVICE_FAILED)
-                continue;
+    for (i = count; i > 0; --i) {
+        qm_service_t *service = &g_services[order[i - 1]];
 
-            result = qm_service_stop(service->name);
+        if (!qm_service_is_active(service))
+            continue;
 
-            if (result == QM_SERVICE_OK) {
-                --remaining;
-                progress = 1;
-            } else if (first_error == QM_SERVICE_OK) {
-                first_error = result;
-            }
+        result = qm_service_stop(service->name);
+
+        if (result != QM_SERVICE_OK &&
+            first_error == QM_SERVICE_OK) {
+            first_error = result;
         }
-
-        if (!progress)
-            break;
     }
 
-    (void)remaining;
     return first_error;
 }
 

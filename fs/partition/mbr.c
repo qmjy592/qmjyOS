@@ -47,6 +47,7 @@ int qm_mbr_scan(
         qm_u32_t start = read_le32(entry + 8);
         qm_u32_t count = read_le32(entry + 12);
         qm_u64_t end;
+        qm_u32_t j;
 
         if (type == 0 && start == 0 && count == 0)
             continue;
@@ -61,6 +62,20 @@ int qm_mbr_scan(
 
         if (end < start || end > device_info.block_count)
             return -3;
+
+        /* Reject overlapping primary partition ranges. */
+        for (j = 0; j < found; ++j) {
+            qm_u64_t previous_start =
+                (qm_u64_t)out_partitions[j].start_lba;
+            qm_u64_t previous_end =
+                previous_start +
+                (qm_u64_t)out_partitions[j].sector_count;
+
+            if ((qm_u64_t)start < previous_end &&
+                previous_start < end)
+                return -3;
+        }
+
 
         if (found >= capacity)
             return -3;

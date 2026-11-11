@@ -88,36 +88,32 @@ int qm_init_register(
     return QM_INIT_OK;
 }
 
+/* QM_INIT_STABLE_PRIORITY_FIX */
 int qm_init_run_stage(qm_init_stage_t stage)
 {
     size_t completed = 0;
     size_t stage_entries = 0;
     size_t i;
-
-    int last_index = -1;
     int selected;
     int callback_result;
 
-    if (!qm_init_valid_stage(stage)) {
+    if (!qm_init_valid_stage(stage))
         return QM_INIT_ERR_INVALID;
-    }
 
-    if (g_running) {
+    if (g_running)
         return QM_INIT_ERR_STATE;
-    }
 
-    if (stage != g_next_stage) {
+    if (stage != g_next_stage)
         return QM_INIT_ERR_STAGE_ORDER;
-    }
 
     for (i = 0; i < g_count; ++i) {
-        if (g_entries[i].stage == stage) {
-            if (g_entries[i].state != QM_INIT_STATE_PENDING) {
-                return QM_INIT_ERR_STATE;
-            }
+        if (g_entries[i].stage != stage)
+            continue;
 
-            ++stage_entries;
-        }
+        if (g_entries[i].state != QM_INIT_STATE_PENDING)
+            return QM_INIT_ERR_STATE;
+
+        ++stage_entries;
     }
 
     g_running = 1;
@@ -125,47 +121,21 @@ int qm_init_run_stage(qm_init_stage_t stage)
     while (completed < stage_entries) {
         selected = -1;
 
+        /*
+         * 每轮都扫描全部待执行项目。
+         * 相同优先级保持注册顺序。
+         */
         for (i = 0; i < g_count; ++i) {
             qm_init_entry_t *candidate = &g_entries[i];
 
             if (candidate->stage != stage ||
-                candidate->state != QM_INIT_STATE_PENDING) {
+                candidate->state != QM_INIT_STATE_PENDING)
                 continue;
-            }
-
-            if (last_index >= 0 && (int)i <= last_index) {
-                continue;
-            }
 
             if (selected < 0 ||
                 candidate->priority <
-                    g_entries[selected].priority) {
+                    g_entries[selected].priority)
                 selected = (int)i;
-            }
-        }
-
-        /*
-         * If a lower-priority entry was registered after a
-         * higher-priority entry, restart selection from the
-         * beginning while excluding already completed entries.
-         */
-        if (selected < 0) {
-            last_index = -1;
-
-            for (i = 0; i < g_count; ++i) {
-                qm_init_entry_t *candidate = &g_entries[i];
-
-                if (candidate->stage != stage ||
-                    candidate->state != QM_INIT_STATE_PENDING) {
-                    continue;
-                }
-
-                if (selected < 0 ||
-                    candidate->priority <
-                        g_entries[selected].priority) {
-                    selected = (int)i;
-                }
-            }
         }
 
         if (selected < 0) {
@@ -185,7 +155,6 @@ int qm_init_run_stage(qm_init_stage_t stage)
 
         g_entries[selected].state = QM_INIT_STATE_DONE;
         ++completed;
-        last_index = selected;
     }
 
     g_running = 0;

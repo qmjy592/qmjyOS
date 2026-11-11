@@ -122,6 +122,7 @@ test-boot: kernel.elf kernel64.elf kernel64.bin qboot-bios
 	bash tools/verify_boot.sh
 	bash tools/qboot/test_bios_boot.sh
 
+	bash tools/qboot/test_qfs_ide.sh
 -include $(OBJS_32:.o=.d)
 -include $(OBJS_64:.o=.d)
 
@@ -201,3 +202,9 @@ qboot-bios: kernel64.bin
 
 test-qboot-bios: qboot-bios
 >bash tools/qboot/test_bios_boot.sh
+
+# Independent QFS IDE persistence test.
+.PHONY: test-qfs-ide
+
+test-qfs-ide:
+>bash tools/qboot/test_qfs_ide.sh

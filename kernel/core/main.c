@@ -430,6 +430,16 @@ static void storage_init(void)
     serial_puts("[Storage] MBR partition table detected.\n");
 
     for (i = 0; i < partition_count; ++i) {
+        /*
+         * Normal boot only mounts standard QFS partitions.
+         * The dedicated QFS test partition type 0x7F is ignored.
+         * Normal boot must never format a disk automatically.
+         */
+        if (partitions[i].type != 0x83U) {
+            serial_puts("[Storage] Skipping non-QFS partition.\n");
+            continue;
+        }
+
         result = qfs_mount_at(&partitions[i], "/disk");
 
         if (result == VFS_OK) {

@@ -171,8 +171,64 @@ static void test_callback_failure(void)
     assert(execution_order[1] == 9);
 }
 
+
+static int callback_priority_5a(void)
+{
+    execution_order[execution_count++] = 51;
+    return 0;
+}
+
+static int callback_priority_1(void)
+{
+    execution_order[execution_count++] = 1;
+    return 0;
+}
+
+static int callback_priority_10(void)
+{
+    execution_order[execution_count++] = 10;
+    return 0;
+}
+
+static int callback_priority_5b(void)
+{
+    execution_order[execution_count++] = 52;
+    return 0;
+}
+
+static void test_priority_order(void)
+{
+    qm_init_init();
+    execution_count = 0;
+
+    assert(qm_init_register(
+        "priority-5-a", QM_INIT_STAGE_EARLY, 5,
+        callback_priority_5a) == QM_INIT_OK);
+
+    assert(qm_init_register(
+        "priority-1", QM_INIT_STAGE_EARLY, 1,
+        callback_priority_1) == QM_INIT_OK);
+
+    assert(qm_init_register(
+        "priority-10", QM_INIT_STAGE_EARLY, 10,
+        callback_priority_10) == QM_INIT_OK);
+
+    assert(qm_init_register(
+        "priority-5-b", QM_INIT_STAGE_EARLY, 5,
+        callback_priority_5b) == QM_INIT_OK);
+
+    assert(qm_init_run_stage(QM_INIT_STAGE_EARLY) == QM_INIT_OK);
+
+    assert(execution_count == 4);
+    assert(execution_order[0] == 1);
+    assert(execution_order[1] == 51);
+    assert(execution_order[2] == 52);
+    assert(execution_order[3] == 10);
+}
+
 int main(void)
 {
+    test_priority_order();
     test_normal_initialization();
     test_validation();
     test_callback_failure();

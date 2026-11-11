@@ -27,7 +27,8 @@ typedef enum {
     QM_SERVICE_ERR_STATE = -5,
     QM_SERVICE_ERR_DEPENDENCY = -6,
     QM_SERVICE_ERR_CALLBACK = -7,
-    QM_SERVICE_ERR_CYCLE = -8
+    QM_SERVICE_ERR_CYCLE = -8,
+    QM_SERVICE_ERR_IN_USE = -9
 } qm_service_error_t;
 
 typedef int (*qm_service_start_fn)(void);

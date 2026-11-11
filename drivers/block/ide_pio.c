@@ -132,6 +132,35 @@ static int ide_wait(int require_drq)
     return -1;
 }
 
+
+/*
+ * Wait for an ATA command to complete.
+ * Completion requires BSY=0, DRQ=0 and no device error.
+ */
+static int ide_wait_complete(void)
+{
+    qm_u32_t timeout;
+    qm_u8_t status;
+
+    for (timeout = 0; timeout < IDE_TIMEOUT; ++timeout) {
+        status = ide_inb(IDE_STATUS);
+
+        if (status == 0xFF || status == 0x00)
+            return -1;
+
+        if (status & IDE_STATUS_BSY)
+            continue;
+
+        if (status & (IDE_STATUS_ERR | IDE_STATUS_DF))
+            return -1;
+
+        if (!(status & IDE_STATUS_DRQ))
+            return 0;
+    }
+
+    return -1;
+}
+
 static void ide_select(qm_u8_t slave)
 {
     ide_outb(
@@ -192,6 +221,10 @@ static int ide_identify(
 
     ide_insw(IDE_DATA, identify, IDE_WORDS_PER_SECTOR);
 
+    if (ide_wait_complete() != 0)
+        return -1;
+
+
     /* LBA support is word 49 bit 9. */
     if (!(identify[49] & (1U << 9)))
         return -1;
@@ -220,10 +253,10 @@ static int ide_transfer_one(
     if (buffer == 0 || lba > IDE_MAX_LBA28)
         return -1;
 
+    ide_select(slave);
+
     if (ide_wait(0) != 0)
         return -1;
-
-    ide_select(slave);
 
     ide_outb(IDE_FEATURES, 0);
     ide_outb(IDE_SECCOUNT0, 1);
@@ -255,7 +288,7 @@ static int ide_transfer_one(
             IDE_WORDS_PER_SECTOR
         );
 
-        if (ide_wait(0) != 0)
+        if (ide_wait_complete() != 0)
             return -1;
     } else {
         ide_insw(
@@ -263,6 +296,9 @@ static int ide_transfer_one(
             buffer,
             IDE_WORDS_PER_SECTOR
         );
+
+        if (ide_wait_complete() != 0)
+            return -1;
     }
 
     return 0;
@@ -292,9 +328,11 @@ static qm_status_t ide_read(
         return (qm_status_t)-1;
 
     if (lba > IDE_MAX_LBA28 ||
-        (qm_u64_t)count > ide_devices[slave].sectors ||
-        lba + count > ide_devices[slave].sectors ||
-        lba + count > 0x10000000ULL)
+        lba > (qm_u64_t)ide_devices[slave].sectors ||
+        (qm_u64_t)count >
+            (qm_u64_t)ide_devices[slave].sectors - lba ||
+        lba > 0x10000000ULL ||
+        (qm_u64_t)count > 0x10000000ULL - lba)
         return (qm_status_t)-1;
 
     for (i = 0; i < count; ++i) {
@@ -333,9 +371,11 @@ static qm_status_t ide_write(
         return (qm_status_t)-1;
 
     if (lba > IDE_MAX_LBA28 ||
-        (qm_u64_t)count > ide_devices[slave].sectors ||
-        lba + count > ide_devices[slave].sectors ||
-        lba + count > 0x10000000ULL)
+        lba > (qm_u64_t)ide_devices[slave].sectors ||
+        (qm_u64_t)count >
+            (qm_u64_t)ide_devices[slave].sectors - lba ||
+        lba > 0x10000000ULL ||
+        (qm_u64_t)count > 0x10000000ULL - lba)
         return (qm_status_t)-1;
 
     for (i = 0; i < count; ++i) {
@@ -364,13 +404,13 @@ static qm_status_t ide_flush(qm_block_device_id_t id)
     if (!ide_devices[slave].present)
         return (qm_status_t)-1;
 
+    ide_select(slave);
+
     if (ide_wait(0) != 0)
         return (qm_status_t)-1;
-
-    ide_select(slave);
     ide_outb(IDE_COMMAND, IDE_CMD_FLUSH);
 
-    if (ide_wait(0) != 0)
+    if (ide_wait_complete() != 0)
         return (qm_status_t)-1;
 
     return (qm_status_t)0;
@@ -382,16 +422,43 @@ static const qm_block_device_ops_t ide_block_ops = {
     .flush = ide_flush
 };
 
+
+static int ide_name_equal(const char *a, const char *b)
+{
+    if (a == 0 || b == 0)
+        return 0;
+
+    while (*a != '\0' && *b != '\0') {
+        if (*a != *b)
+            return 0;
+        ++a;
+        ++b;
+    }
+
+    return *a == *b;
+}
+
 static qm_status_t ide_register_disk(
     qm_u8_t slave,
     qm_u32_t sectors)
 {
     qm_block_device_info_t info;
+    qm_block_device_info_t existing;
+    qm_block_device_id_t id;
+    qm_status_t status;
 
-    info.id = slave == IDE_DEVICE_MASTER
-            ? QM_IDE_PRIMARY_MASTER
-            : QM_IDE_PRIMARY_SLAVE;
+    if (slave != IDE_DEVICE_MASTER &&
+        slave != IDE_DEVICE_SLAVE)
+        return (qm_status_t)-1;
 
+    if (sectors == 0 || sectors > 0x10000000U)
+        return (qm_status_t)-1;
+
+    id = slave == IDE_DEVICE_MASTER
+       ? QM_IDE_PRIMARY_MASTER
+       : QM_IDE_PRIMARY_SLAVE;
+
+    info.id = id;
     info.block_count = sectors;
     info.block_size = IDE_SECTOR_SIZE;
     info.flags = 0;
@@ -399,42 +466,73 @@ static qm_status_t ide_register_disk(
               ? "ide-primary-master"
               : "ide-primary-slave";
 
+    status = qm_block_get_info(id, &existing);
+
+    if (status == 0) {
+        if (existing.id == info.id &&
+            existing.block_count == info.block_count &&
+            existing.block_size == info.block_size &&
+            existing.flags == info.flags &&
+            ide_name_equal(existing.name, info.name))
+            return (qm_status_t)0;
+
+        status = qm_block_device_unregister(id);
+        if (status != 0)
+            return status;
+    } else if (status != (qm_status_t)-1) {
+        return status;
+    }
+
     return qm_block_device_register(&info, &ide_block_ops);
 }
 
 qm_status_t qm_ide_pio_init(void)
 {
-    qm_u32_t sectors;
+qm_u32_t master_sectors = 0;
+    qm_u32_t slave_sectors = 0;
+    int master_found;
+    int slave_found;
     int registered = 0;
 
-    ide_devices[IDE_DEVICE_MASTER].present = 0;
-    ide_devices[IDE_DEVICE_SLAVE].present = 0;
-
-    ide_devices[IDE_DEVICE_MASTER].sectors = 0;
-    ide_devices[IDE_DEVICE_SLAVE].sectors = 0;
-
-    /* Disable IDE channel interrupts; this driver uses polling. */
+    /* This driver uses polling, not IDE channel interrupts. */
     ide_outb(IDE_CONTROL, 0x02);
 
-    if (ide_identify(IDE_DEVICE_MASTER, &sectors) == 0) {
-        ide_devices[IDE_DEVICE_MASTER].sectors = sectors;
+    /*
+     * Probe both devices before changing their published state.
+     * A failed probe does not erase a previously working registration.
+     */
+    master_found = ide_identify(
+        IDE_DEVICE_MASTER,
+        &master_sectors
+    );
+
+    slave_found = ide_identify(
+        IDE_DEVICE_SLAVE,
+        &slave_sectors
+    );
+
+    if (master_found == 0 &&
+        ide_register_disk(IDE_DEVICE_MASTER, master_sectors) == 0) {
+        ide_devices[IDE_DEVICE_MASTER].sectors = master_sectors;
         ide_devices[IDE_DEVICE_MASTER].present = 1;
-
-        if (ide_register_disk(IDE_DEVICE_MASTER, sectors) == 0)
-            ++registered;
-        else
-            ide_devices[IDE_DEVICE_MASTER].present = 0;
+        ++registered;
     }
 
-    if (ide_identify(IDE_DEVICE_SLAVE, &sectors) == 0) {
-        ide_devices[IDE_DEVICE_SLAVE].sectors = sectors;
+    if (slave_found == 0 &&
+        ide_register_disk(IDE_DEVICE_SLAVE, slave_sectors) == 0) {
+        ide_devices[IDE_DEVICE_SLAVE].sectors = slave_sectors;
         ide_devices[IDE_DEVICE_SLAVE].present = 1;
-
-        if (ide_register_disk(IDE_DEVICE_SLAVE, sectors) == 0)
-            ++registered;
-        else
-            ide_devices[IDE_DEVICE_SLAVE].present = 0;
+        ++registered;
     }
 
-    return registered ? (qm_status_t)0 : (qm_status_t)-1;
+    /*
+     * Do not clear old state merely because a later probe timed out.
+     * A transient probe failure must not silently disable a registered disk.
+     */
+    if (registered != 0 ||
+        ide_devices[IDE_DEVICE_MASTER].present ||
+        ide_devices[IDE_DEVICE_SLAVE].present)
+        return (qm_status_t)0;
+
+    return (qm_status_t)-1;
 }
