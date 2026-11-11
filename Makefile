@@ -2,7 +2,16 @@ CC := clang
 LD := ld.lld
 OBJCOPY := llvm-objcopy
 
+HOST_CC ?= clang
+HOST_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror
+
+HOST_MEMORY_TEST := .memory-host-test
+HOST_PAGING_TEST := .paging-host-test
+HOST_VFS_TEST := .vfs-host-test
+HOST_RAMFS_TEST := .ramfs-host-test
+
 CPPFLAGS := \
+-Iinclude \
 -Iarch/x86_64/idt \
 -Iarch/x86_64/interrupts \
 -Imm/physical \
@@ -22,29 +31,22 @@ CFLAGS_64 := --target=x86_64-unknown-none -m64 \
 LDFLAGS_32 := -m elf_i386 -T linker32.ld -nostdlib -static
 LDFLAGS_64 := -m elf_x86_64 -T linker64.ld -nostdlib -static
 
-OBJS_32 := boot/bios/boot.o
+MODULE_MK := build/modules.mk
 
-OBJS_64 := \
-arch/x86_64/boot/entry64.o \
-arch/x86_64/gdt/gdt_load.o \
-arch/x86_64/cpu/ring3_entry.o \
-kernel/core/main.o \
-drivers/serial/serial.o \
-arch/x86_64/idt/idt.o \
-arch/x86_64/interrupts/exception.o \
-arch/x86_64/interrupts/excep.o \
-arch/x86_64/interrupts/pic.o \
-arch/x86_64/interrupts/timer.o \
-arch/x86_64/interrupts/irq.o \
-arch/x86_64/interrupts/irq_entry.o \
-mm/paging/paging.o \
-mm/physical/memory.o \
-sched/core/task.o \
-arch/x86_64/cpu/switch.o
+-include $(MODULE_MK)
 
-.PHONY: all run clean test-memory test-paging clean-memory-test test-boot
+.PHONY: all run clean \
+        test-memory test-paging test-vfs test-ramfs test-boot \
+        clean-memory-test module-plan
 
 all: kernel.elf
+
+module-plan: $(MODULE_MK)
+	@echo "模块构建计划：$(QBUILD_MODULE_PLAN)"
+
+$(MODULE_MK): config/modules.conf config/modules.dep config/modules.status tools/qbuild/module_plan.py
+	@mkdir -p build
+	python3 tools/qbuild/module_plan.py --make
 
 kernel64.elf: $(OBJS_64) linker64.ld
 	$(LD) $(LDFLAGS_64) -o $@ $(OBJS_64)
@@ -75,11 +77,8 @@ clean:
 	rm -f $(OBJS_32:.o=.d) $(OBJS_64:.o=.d)
 	rm -f kernel.elf kernel64.elf kernel64.bin kernel64.o
 	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
-
-HOST_CC ?= clang
-HOST_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror
-HOST_MEMORY_TEST := .memory-host-test
-HOST_PAGING_TEST := .paging-host-test
+	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST)
+	rm -f $(MODULE_MK)
 
 test-memory: $(HOST_MEMORY_TEST)
 	./$(HOST_MEMORY_TEST)
@@ -93,8 +92,21 @@ test-paging: $(HOST_PAGING_TEST)
 $(HOST_PAGING_TEST): tests/paging_host_test.c mm/paging/paging.c mm/paging/paging.h
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -DVM_HOST_TEST -I. -Imm/paging -o $@ tests/paging_host_test.c mm/paging/paging.c
 
+test-vfs: $(HOST_VFS_TEST)
+	./$(HOST_VFS_TEST)
+
+$(HOST_VFS_TEST): tests/filesystem/vfs_host_test.c fs/vfs/vfs.c fs/vfs/vfs.h
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -o $@ tests/filesystem/vfs_host_test.c fs/vfs/vfs.c
+
+test-ramfs: $(HOST_RAMFS_TEST)
+	./$(HOST_RAMFS_TEST)
+
+$(HOST_RAMFS_TEST): tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -o $@ tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c
+
 clean-memory-test:
 	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
+	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST)
 
 test-boot: kernel.elf kernel64.elf kernel64.bin
 	bash tools/verify_boot.sh

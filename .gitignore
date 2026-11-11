@@ -78,3 +78,12 @@ qemu.log
 
 # Host-side test binary
 .memory-host-test
+/build/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Local host test binaries
+.ramfs-host-test
+.vfs-host-test

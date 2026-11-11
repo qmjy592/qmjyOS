@@ -5,6 +5,7 @@
 #include "task.h"
 #include "paging.h"
 #include "memory.h"
+#include "../../fs/core/fs_init.h"
 #include <stdint.h>
 
 extern void gdt_load_and_reload_cs(const void *gdtr);
@@ -310,6 +311,12 @@ cleanup:
 
 void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
     serial_init();
+    if (fs_init() == 0) {
+        serial_puts("[FS] VFS initialized.\n");
+        serial_puts("[FS] RAMFS mounted as root filesystem.\n");
+    } else {
+        serial_puts("[FS] ERROR: filesystem initialization failed.\n");
+    }
     serial_puts("Hello, x86_64 kernel!\n");
 
     int mm_status = mm_init_from_multiboot(multiboot_magic, multiboot_info_addr,

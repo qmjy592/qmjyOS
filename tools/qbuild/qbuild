@@ -1,0 +1,261 @@
+#!/data/data/com.termux/files/usr/bin/sh
+
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+cd "$ROOT_DIR"
+
+VERSION="0.5.0"
+COMMAND="${1:-help}"
+
+if [ "$#" -gt 0 ]; then
+    shift
+fi
+
+ARCH="x86_64"
+BOOT="bios"
+JOBS="${QBUILD_JOBS:-2}"
+MODULES=""
+
+usage() {
+    cat <<'HELP'
+qmjyOS QBuild v0.5.0
+
+用法：
+  ./qbuild help
+  ./qbuild info
+  ./qbuild config [选项]
+  ./qbuild modules
+  ./qbuild deps
+  ./qbuild plan
+  ./qbuild build [选项]
+  ./qbuild test [选项]
+  ./qbuild clean
+
+选项：
+  --arch x86_64|aarch64
+  --boot bios|uefi
+  --jobs N
+  --module MODULE
+      指定模块构建，可重复传入多个模块
+  -h, --help
+
+模块管理：
+  modules       查看配置、实现状态和源码映射
+  deps          查看模块依赖
+  plan          查看依赖拓扑和对象文件计划
+  config        检查配置、状态、依赖和源码映射
+
+构建：
+  build         构建完整内核
+  build --module MODULE
+                仅编译指定模块及其依赖的对象文件
+  test          运行现有全部测试
+  clean         清理构建产物
+
+当前实际内核目标：
+  x86_64 + BIOS
+HELP
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --arch)
+            [ "$#" -ge 2 ] || {
+                echo "错误：--arch 缺少参数"
+                exit 2
+            }
+            ARCH="$2"
+            shift 2
+            ;;
+        --boot)
+            [ "$#" -ge 2 ] || {
+                echo "错误：--boot 缺少参数"
+                exit 2
+            }
+            BOOT="$2"
+            shift 2
+            ;;
+        --jobs)
+            [ "$#" -ge 2 ] || {
+                echo "错误：--jobs 缺少参数"
+                exit 2
+            }
+            JOBS="$2"
+            shift 2
+            ;;
+        --module)
+            [ "$#" -ge 2 ] || {
+                echo "错误：--module 缺少参数"
+                exit 2
+            }
+            if [ -n "$MODULES" ]; then
+                MODULES="$MODULES
+$2"
+            else
+                MODULES="$2"
+            fi
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "错误：未知参数 $1"
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+check_target() {
+    case "$ARCH" in
+        x86_64|aarch64) ;;
+        *)
+            echo "错误：不支持的架构：$ARCH"
+            exit 2
+            ;;
+    esac
+
+    case "$BOOT" in
+        bios|uefi) ;;
+        *)
+            echo "错误：不支持的启动方式：$BOOT"
+            exit 2
+            ;;
+    esac
+
+    if [ "$ARCH" != "x86_64" ] || [ "$BOOT" != "bios" ]; then
+        echo "错误：目标尚未实现：$ARCH + $BOOT"
+        echo "当前仅支持：x86_64 + bios"
+        exit 3
+    fi
+}
+
+check_jobs() {
+    case "$JOBS" in
+        ''|*[!0-9]*|0)
+            echo "错误：并行任务数必须是正整数"
+            exit 2
+            ;;
+    esac
+}
+
+check_python() {
+    command -v python3 >/dev/null 2>&1 || {
+        echo "错误：QBuild 模块管理需要 Python 3"
+        exit 4
+    }
+}
+
+module_tool() {
+    check_python
+    python3 tools/qbuild/module_plan.py "$@"
+}
+
+check_build_options() {
+    check_target
+    check_jobs
+    module_tool --check
+}
+
+run_build() {
+    check_build_options
+
+    if [ -z "$MODULES" ]; then
+        echo "===== QBuild v$VERSION 完整内核构建 ====="
+        module_tool --make
+        make -j"$JOBS" all
+    else
+        echo "===== QBuild v$VERSION 指定模块构建 ====="
+
+        set --
+        OLD_IFS=$IFS
+        IFS='
+'
+        for module in $MODULES; do
+            [ -n "$module" ] || continue
+            set -- "$@" --module "$module"
+        done
+        IFS=$OLD_IFS
+
+        module_tool --make "$@"
+
+        OBJECTS=$(module_tool --objects "$@") || exit $?
+        echo "选中对象文件："
+        printf '%s\n' "$OBJECTS"
+
+        set --
+        for object in $OBJECTS; do
+            [ -n "$object" ] && set -- "$@" "$object"
+        done
+
+        [ "$#" -gt 0 ] || {
+            echo "错误：所选模块没有可构建对象"
+            exit 2
+        }
+
+        make -j"$JOBS" "$@"
+        echo "指定模块对象编译完成。"
+        echo "注意：此模式不链接完整内核镜像。"
+    fi
+}
+
+run_test() {
+    check_build_options
+    echo "===== QBuild v$VERSION 测试 ====="
+    make -j"$JOBS" \
+        test-memory \
+        test-paging \
+        test-vfs \
+        test-ramfs \
+        test-boot
+}
+
+case "$COMMAND" in
+    help)
+        usage
+        ;;
+    info)
+        echo "qmjyOS QBuild v$VERSION"
+        echo "架构：$ARCH"
+        echo "启动方式：$BOOT"
+        echo "并行任务：$JOBS"
+        echo "模块状态：config/modules.status"
+        echo "模块依赖：config/modules.dep"
+        echo "源码映射：tools/qbuild/module_plan.py"
+        ;;
+    config)
+        check_target
+        check_jobs
+        module_tool --check
+        ;;
+    modules)
+        module_tool --check
+        module_tool --modules
+        ;;
+    deps)
+        module_tool --check
+        module_tool --deps
+        ;;
+    plan)
+        module_tool --check
+        module_tool --show
+        ;;
+    build)
+        run_build
+        ;;
+    test)
+        run_test
+        ;;
+    clean)
+        make clean
+        ;;
+    *)
+        echo "错误：未知命令 $COMMAND"
+        usage
+        exit 2
+        ;;
+esac
