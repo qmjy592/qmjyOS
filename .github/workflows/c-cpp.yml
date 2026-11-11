@@ -31,6 +31,7 @@ jobs:
         run: |
           sh -n tools/qbuild/qbuild
           bash -n tools/verify_boot.sh
+          bash -n tools/qemu_boot_test.sh
 
       - name: Check Python syntax
         run: |
@@ -60,9 +61,9 @@ jobs:
             --jobs 4
 
   build-and-test:
-    name: x86_64 BIOS build and tests
+    name: x86_64 BIOS build and QEMU boot test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     needs:
       - code-and-config
 
@@ -94,6 +95,10 @@ jobs:
             --arch x86_64 \
             --boot bios \
             --jobs 4
+
+      - name: Run actual QEMU BIOS boot test
+        run: |
+          bash tools/qemu_boot_test.sh
 
       - name: Upload kernel build artifacts
         if: success()
