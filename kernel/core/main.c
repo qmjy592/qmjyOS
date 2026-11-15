@@ -5,6 +5,7 @@
 #include "task.h"
 #include "paging.h"
 #include "memory.h"
+#include "qmjy/heap.h"
 #include "../../fs/core/fs_init.h"
 #include "../../fs/qfs/qfs.h"
 #include "../../fs/partition/mbr.h"
@@ -157,6 +158,8 @@ static int ring3_prepare_and_run(void)
     int code_mapped = 0;
     int stack_mapped = 0;
     int activated = 0;
+    int stack_page_releasable = 1;
+    int code_page_releasable = 1;
     int result = -1;
 
     const size_t blob_size =
@@ -286,24 +289,28 @@ cleanup:
      */
     if (stack_mapped) {
         if (vm_unmap_page(RING3_STACK_VA) != VM_OK) {
-            serial_puts("[Ring 3] WARNING: stack unmap failed.\n");
+            serial_puts("[Ring 3] WARNING: stack unmap failed.; page retained.\n");
+            stack_page_releasable = 0;
             result = -1;
         }
     }
 
     if (code_mapped) {
         if (vm_unmap_page(RING3_CODE_VA) != VM_OK) {
-            serial_puts("[Ring 3] WARNING: code unmap failed.\n");
+            serial_puts("[Ring 3] WARNING: code unmap failed.; page retained.\n");
+            code_page_releasable = 0;
             result = -1;
         }
     }
 
-    if (stack_pa && mm_free_page(stack_pa) != MM_OK) {
+    if (stack_pa && stack_page_releasable &&
+        mm_free_page(stack_pa) != MM_OK) {
         serial_puts("[Ring 3] WARNING: stack page release failed.\n");
         result = -1;
     }
 
-    if (code_pa && mm_free_page(code_pa) != MM_OK) {
+    if (code_pa && code_page_releasable &&
+        mm_free_page(code_pa) != MM_OK) {
         serial_puts("[Ring 3] WARNING: code page release failed.\n");
         result = -1;
     }
@@ -454,6 +461,11 @@ static void storage_init(void)
 
 void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
     serial_init();
+    if (qm_heap_init() == QM_OK) {
+        serial_puts("[MM] Kernel heap initialized (bounded early arena).\n");
+    } else {
+        serial_puts("[MM] WARNING: kernel heap initialization failed; heap-dependent services remain disabled.\n");
+    }
     if (fs_init() == 0) {
         serial_puts("[FS] VFS initialized.\n");
         serial_puts("[FS] RAMFS mounted as root filesystem.\n");

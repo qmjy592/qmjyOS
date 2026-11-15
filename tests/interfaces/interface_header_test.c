@@ -11,6 +11,7 @@
 #include "qmjy/log.h"
 #include "qmjy/panic.h"
 #include "qmjy/memory.h"
+#include "qmjy/heap.h"
 #include "qmjy/task.h"
 #include "qmjy/ipc.h"
 #include "qmjy/device.h"

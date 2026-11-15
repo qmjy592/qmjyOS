@@ -1316,6 +1316,24 @@ int qfs_mount(const qm_partition_t *partition)
                 }
             }
         }
+
+        /* Every allocated data bit must belong to exactly one inode. */
+        for (i = QFS_DATA_START; i < qfs_total_sectors; ++i) {
+            if (qfs_bitmap_test(i) != (block_seen[i] != 0)) {
+                qfs_is_mounted = 0;
+                return VFS_ERR_INVALID;
+            }
+        }
+
+        /* Bits beyond the partition boundary must never be allocated. */
+        for (i = qfs_total_sectors;
+             i < QFS_BITMAP_SECTORS * QFS_SECTOR_SIZE * 8U;
+             ++i) {
+            if (qfs_bitmap_test(i)) {
+                qfs_is_mounted = 0;
+                return VFS_ERR_INVALID;
+            }
+        }
     }
 
     /*

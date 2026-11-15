@@ -209,10 +209,12 @@ run_test() {
     make -j"$JOBS" \
         test-memory \
         test-paging \
+        test-heap \
         test-vfs \
         test-ramfs \
         test-qfs \
         test-interfaces \
+        test-kernel-foundation \
         test-services \
         test-boot
 }

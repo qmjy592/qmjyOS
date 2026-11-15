@@ -16,6 +16,7 @@ int qm_mbr_scan(
 {
     qm_u8_t sector[QM_MBR_SECTOR_SIZE];
     qm_block_device_info_t device_info;
+    qm_partition_t parsed[QM_MBR_PARTITION_COUNT];
     qm_u32_t found = 0;
     qm_u32_t i;
 
@@ -66,10 +67,10 @@ int qm_mbr_scan(
         /* Reject overlapping primary partition ranges. */
         for (j = 0; j < found; ++j) {
             qm_u64_t previous_start =
-                (qm_u64_t)out_partitions[j].start_lba;
+                (qm_u64_t)parsed[j].start_lba;
             qm_u64_t previous_end =
                 previous_start +
-                (qm_u64_t)out_partitions[j].sector_count;
+                (qm_u64_t)parsed[j].sector_count;
 
             if ((qm_u64_t)start < previous_end &&
                 previous_start < end)
@@ -77,19 +78,23 @@ int qm_mbr_scan(
         }
 
 
-        if (found >= capacity)
-            return -3;
-
-        out_partitions[found].device_id = device_id;
-        out_partitions[found].index = i;
-        out_partitions[found].type = type;
-        out_partitions[found].bootable =
+        parsed[found].device_id = device_id;
+        parsed[found].index = i;
+        parsed[found].type = type;
+        parsed[found].bootable =
             (status == 0x80) ? 1 : 0;
-        out_partitions[found].start_lba = start;
-        out_partitions[found].sector_count = count;
+        parsed[found].start_lba = start;
+        parsed[found].sector_count = count;
 
         ++found;
     }
+
+    /* Publish results only after the entire table is valid. */
+    if (found > capacity)
+        return -3;
+
+    for (i = 0; i < found; ++i)
+        out_partitions[i] = parsed[i];
 
     *out_count = found;
     return 0;

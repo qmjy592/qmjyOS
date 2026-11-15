@@ -1,4 +1,4 @@
-.include "build/qboot/kernel_layout.inc"
+.include "kernel_layout.inc"
 
 .section .text
 .code16

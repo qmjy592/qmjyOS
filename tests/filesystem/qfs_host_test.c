@@ -312,6 +312,36 @@ int main(void)
         qfs_unmount() == VFS_OK,
         "final QFS unmount");
 
+    {
+        const size_t bitmap_base =
+            ((size_t)TEST_PARTITION_START + 1U) * TEST_SECTOR_SIZE;
+        const size_t orphan_byte = bitmap_base + 30U / 8U;
+        const size_t outside_byte =
+            bitmap_base + TEST_PARTITION_SECTORS / 8U;
+
+        /* Block 30 is inside the partition but has no inode owner. */
+        test_disk[orphan_byte] |= (unsigned char)(1U << (30U % 8U));
+        CHECK(
+            qfs_mount(&partition) == VFS_ERR_INVALID,
+            "reject allocated data block without inode owner");
+        test_disk[orphan_byte] &=
+            (unsigned char)~(1U << (30U % 8U));
+
+        /* Sector 2048 is exactly outside this partition's extent. */
+        test_disk[outside_byte] |= 1U;
+        CHECK(
+            qfs_mount(&partition) == VFS_ERR_INVALID,
+            "reject bitmap allocation beyond partition boundary");
+        test_disk[outside_byte] &= (unsigned char)~1U;
+
+        CHECK(
+            qfs_mount(&partition) == VFS_OK,
+            "mount succeeds after restoring valid bitmap");
+        CHECK(
+            qfs_unmount() == VFS_OK,
+            "unmount after bitmap corruption tests");
+    }
+
     CHECK(
         qm_block_device_unregister(TEST_DEVICE_ID) == QM_OK,
         "unregister test block device");

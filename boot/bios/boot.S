@@ -104,20 +104,6 @@ reload_cs:
     or $(1 << 5), %eax
     mov %eax, %cr4
 
-    # Enable EFER.NXE only when CPUID reports NX support.
-    mov $0x80000000, %eax
-    cpuid
-    cmp $0x80000001, %eax
-    jb 2f
-    mov $0x80000001, %eax
-    cpuid
-    bt $20, %edx
-    jnc 2f
-    mov $0xC0000080, %ecx
-    rdmsr
-    bts $11, %eax
-    wrmsr
-2:
     # Enable long mode. CR0.WP also enforces supervisor write protection.
     /* RING3_NXE_CPU_CHECK: detect extended CPUID NX support */
     pushl %ebx

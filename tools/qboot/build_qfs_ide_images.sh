@@ -9,7 +9,7 @@ fail() {
     exit 1
 }
 
-for tool in clang ld.lld llvm-objcopy python3 make; do
+for tool in clang ld.lld llvm-objcopy llvm-nm python3 make; do
     command -v "$tool" >/dev/null 2>&1 ||
         fail "Missing tool: $tool"
 done
@@ -102,6 +102,8 @@ build_mode() {
     local kernel_elf="$BUILD_ROOT/$name/kernel64.elf"
     local kernel_bin="$BUILD_ROOT/$name/kernel64.bin"
     local test_object="$BUILD_ROOT/$name/qfs_ide_test_main.o"
+    local kernel_map="$BUILD_ROOT/$name/kernel64.map"
+    local kernel_symbols="$BUILD_ROOT/$name/kernel64.symbols"
 
     mkdir -p "$BUILD_ROOT/$name"
 
@@ -114,10 +116,22 @@ build_mode() {
 
     ld.lld -m elf_x86_64 \
         -T linker64.ld \
+        -Map="$kernel_map" \
         -nostdlib -static \
         -o "$kernel_elf" \
         "${COMMON_OBJECTS[@]}" \
         "$test_object"
+
+    llvm-nm -n --defined-only "$kernel_elf" > "$kernel_symbols"
+
+    grep -Eq "[[:space:]][Tt][[:space:]]+_start64$" "$kernel_symbols" ||
+        fail "64-bit entry symbol _start64 missing in $kernel_elf"
+
+    grep -Eq "[[:space:]][Tt][[:space:]]+main$" "$kernel_symbols" ||
+        fail "QFS test main() symbol missing in $kernel_elf"
+
+    [ -s "$kernel_map" ] ||
+        fail "Linker map was not generated: $kernel_map"
 
     llvm-objcopy -O binary "$kernel_elf" "$kernel_bin"
 

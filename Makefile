@@ -38,7 +38,7 @@ MODULE_MK := build/modules.mk
 
 .PHONY: all run clean \
         test-memory test-paging test-vfs test-ramfs test-qfs test-boot \
-        clean-memory-test module-plan
+        test-kernel-foundation clean-memory-test module-plan
 
 all: kernel.elf
 
@@ -82,6 +82,7 @@ clean:
 	rm -f $(HOST_INTERFACE_TEST)
 	rm -f $(MODULE_MK)
 	rm -rf build/qboot
+	rm -rf build/tests/kernel-foundation
 
 test-memory: $(HOST_MEMORY_TEST)
 	./$(HOST_MEMORY_TEST)
@@ -119,6 +120,7 @@ clean-memory-test:
 	rm -f $(HOST_INTERFACE_TEST)
 
 test-boot: kernel.elf kernel64.elf kernel64.bin qboot-bios
+	python3 tests/boot/test_bios_nxe.py
 	bash tools/verify_boot.sh
 	bash tools/qboot/test_bios_boot.sh
 
@@ -208,3 +210,46 @@ test-qboot-bios: qboot-bios
 
 test-qfs-ide:
 >bash tools/qboot/test_qfs_ide.sh
+
+
+# Phase 2 kernel foundation host tests
+HOST_KERNEL_FOUNDATION_DIR := build/tests/kernel-foundation
+HOST_KERNEL_FOUNDATION_TESTS := \
+$(HOST_KERNEL_FOUNDATION_DIR)/kernel-foundation \
+$(HOST_KERNEL_FOUNDATION_DIR)/init-failure \
+$(HOST_KERNEL_FOUNDATION_DIR)/syscall
+
+.PHONY: test-kernel-foundation
+test-kernel-foundation: $(HOST_KERNEL_FOUNDATION_TESTS)
+>@set -e; for test in $(HOST_KERNEL_FOUNDATION_TESTS); do echo "===== $$test ====="; ./$$test; done
+
+$(HOST_KERNEL_FOUNDATION_DIR):
+>mkdir -p $@
+
+$(HOST_KERNEL_FOUNDATION_DIR)/kernel-foundation: tests/kernel/kernel_foundation_test.c kernel/core/boot_info.c kernel/core/init_registry.c | $(HOST_KERNEL_FOUNDATION_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
+
+$(HOST_KERNEL_FOUNDATION_DIR)/init-failure: tests/kernel/init_failure_test.c kernel/core/boot_info.c kernel/core/init_registry.c | $(HOST_KERNEL_FOUNDATION_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
+
+$(HOST_KERNEL_FOUNDATION_DIR)/syscall: tests/syscall/syscall_test.c kernel/syscall/syscall.c | $(HOST_KERNEL_FOUNDATION_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
+
+
+# qmjyOS MM_HEAP host test
+.PHONY: test-heap clean-heap-test
+HOST_HEAP_TEST := build/tests/heap/heap_host_test
+
+test-heap: $(HOST_HEAP_TEST)
+>./$(HOST_HEAP_TEST)
+
+$(HOST_HEAP_TEST): tests/memory/heap_host_test.c mm/heap/heap.c include/qmjy/heap.h | build/tests/heap
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ tests/memory/heap_host_test.c mm/heap/heap.c
+
+build/tests/heap:
+>mkdir -p $@
+
+clean: clean-heap-test
+
+clean-heap-test:
+>rm -rf build/tests/heap

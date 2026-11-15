@@ -25,7 +25,7 @@ TIMEOUT_SECONDS=20
 echo "[QFS IDE TEST] Building independent test kernels."
 bash tools/qboot/build_qfs_ide_images.sh
 
-for tool in qemu-system-x86_64 timeout mktemp python3 dd sha256sum cut; do
+for tool in qemu-system-x86_64 timeout python3 dd sha256sum cut; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "[QFS IDE TEST FAIL] Missing tool: $tool" >&2
         exit 1
@@ -52,7 +52,7 @@ VERIFY_SERIAL="$TEST_DIR/verify-serial.log"
 VERIFY_DEBUG="$TEST_DIR/verify-debug.log"
 
 cleanup() {
-    rm -rf "$TEST_DIR"
+    echo "[QFS IDE TEST] Runtime artifacts retained at: $TEST_DIR"
 }
 trap cleanup EXIT
 
@@ -168,6 +168,7 @@ run_qemu_phase() {
     require_marker "$debug_log" "QBOOT_E820_OK"
     require_marker "$debug_log" "QBOOT_KERNEL_LOADED"
     require_marker "$debug_log" "QBOOT_LONG_MODE_HANDOFF"
+    require_marker "$debug_log" "[QFS] MAIN_ENTER"
 }
 
 # First independent boot: format, mount, write, read back and flush.

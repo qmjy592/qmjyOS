@@ -34,6 +34,8 @@ SOURCES_64 = {
     ],
     "KERNEL_CORE": [
         ("kernel/core/main.c", "kernel/core/main.o"),
+        ("kernel/core/boot_info.c", "kernel/core/boot_info.o"),
+        ("kernel/core/init_registry.c", "kernel/core/init_registry.o"),
     ],
     "DRIVER_BLOCK": [
         ("drivers/block/block.c", "drivers/block/block.o"),
@@ -48,8 +50,14 @@ SOURCES_64 = {
     "MM_PAGING": [
         ("mm/paging/paging.c", "mm/paging/paging.o"),
     ],
+    "MM_HEAP": [
+        ("mm/heap/heap.c", "mm/heap/heap.o"),
+    ],
     "SCHEDULER": [
         ("sched/core/task.c", "sched/core/task.o"),
+    ],
+    "SYSCALL": [
+        ("kernel/syscall/syscall.c", "kernel/syscall/syscall.o"),
     ],
     "FS_VFS": [
         ("fs/vfs/vfs.c", "fs/vfs/vfs.o"),
