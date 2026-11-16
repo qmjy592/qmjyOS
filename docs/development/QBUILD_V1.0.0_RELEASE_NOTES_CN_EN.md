@@ -1,7 +1,7 @@
 # QBuild 1.0.0 — Release Notes / 发布说明
 
 **Version:** 1.0.0
-**Release state:** local validation candidate; do not call it publicly released until the project owner completes target-device validation and GitHub Actions verification.
+**Release state:** Termux validation and GitHub Actions CI passed. The public release is pending tag and release publication.
 
 ## 中文
 
@@ -40,7 +40,7 @@ QBuild 1.0.0 将原有 QBuild v0.5.0 模块规划器和 Makefile 入口升级为
 git diff --check
 ```
 
-正式发布前，还必须在项目实际 Termux 环境验证模块启用/禁用、`--with-deps`、`--cascade`、快照恢复/完整性拒绝，以及新提交的 GitHub Actions 全部通过。
+发布验收记录：项目实际 Termux 环境中的 QBuild 自测、模块依赖与配置检查、完整内核构建和测试均已通过；GitHub Actions 对应提交的两个 Job 也全部成功。
 
 ## English
 
