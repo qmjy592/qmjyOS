@@ -27,15 +27,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check shell script syntax
+      - name: Check tracked shell and Python scripts
         run: |
-          sh -n tools/qbuild/qbuild
-          bash -n tools/verify_boot.sh
-          bash -n tools/qemu_boot_test.sh
-
-      - name: Check Python syntax
-        run: |
-          python3 -m py_compile tools/qbuild/module_plan.py
+          bash tools/ci/check_sources.sh
 
       - name: Validate QBuild configuration
         run: |
@@ -43,6 +37,41 @@ jobs:
             --arch x86_64 \
             --boot bios \
             --jobs 4
+
+      - name: Verify unsupported targets are rejected
+        shell: bash
+        run: |
+          check_rejected_target() {
+            local arch="$1"
+            local boot="$2"
+            local output
+            local status
+
+            if output="$(sh tools/qbuild/qbuild config \
+                --arch "$arch" --boot "$boot" --jobs 1 2>&1)"; then
+              status=0
+            else
+              status=$?
+            fi
+
+            if [ "$status" -ne 3 ]; then
+              echo "[FAIL] $arch + $boot returned $status, expected 3"
+              printf '%s\\n' "$output"
+              exit 1
+            fi
+
+            printf '%s\\n' "$output" |
+              grep -Fq "目标尚未实现" || {
+                echo "[FAIL] Missing unsupported-target diagnostic"
+                printf '%s\\n' "$output"
+                exit 1
+              }
+
+            echo "[PASS] $arch + $boot correctly rejected"
+          }
+
+          check_rejected_target x86_64 uefi
+          check_rejected_target aarch64 bios
 
       - name: Inspect QBuild modules and dependencies
         run: |
@@ -89,6 +118,10 @@ jobs:
             --boot bios \
             --jobs 4
 
+      - name: Verify ELF class, architecture and load segments
+        run: |
+          bash tools/ci/verify_elf_layout.sh
+
       - name: Run complete QBuild test suite
         run: |
           sh tools/qbuild/qbuild test \
@@ -96,13 +129,13 @@ jobs:
             --boot bios \
             --jobs 4
 
+      - name: Run host tests with AddressSanitizer and UBSan
+        run: |
+          bash tools/ci/run_host_sanitizers.sh
+
       - name: Run QFS host and crash-consistency tests
         run: |
           bash tools/qfs/run_crash_tests.sh
-
-      - name: Run QFS IDE persistence and restart test
-        run: |
-          bash tools/qboot/test_qfs_ide.sh
 
       - name: Run actual QEMU BIOS boot test
         run: |

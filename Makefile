@@ -3,7 +3,7 @@ LD := ld.lld
 OBJCOPY := llvm-objcopy
 
 HOST_CC ?= clang
-HOST_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror
+HOST_TEST_CFLAGS ?= -std=c11 -Wall -Wextra -Werror
 
 HOST_MEMORY_TEST := .memory-host-test
 HOST_PAGING_TEST := .paging-host-test
