@@ -11,6 +11,7 @@ typedef struct {
 typedef struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idt_ptr_t;
 static idt_entry_t idt[256];
 static idt_ptr_t idt_ptr;
+static uint16_t idt_code_selector = 0x08;
 
 extern void isr0(void);
 extern void isr1(void);
@@ -272,7 +273,7 @@ extern void isr_unexpected_255(void);
 
 static void set_idt_gate(unsigned int n, uint64_t handler) {
     idt[n].offset_low = (uint16_t)(handler & 0xFFFF);
-    idt[n].selector = 0x08;
+    idt[n].selector = idt_code_selector;
     idt[n].ist = 0;
     idt[n].type_attr = 0x8E;
     idt[n].offset_mid = (uint16_t)((handler >> 16) & 0xFFFF);
@@ -280,7 +281,8 @@ static void set_idt_gate(unsigned int n, uint64_t handler) {
     idt[n].zero = 0;
 }
 
-void idt_init(void) {
+void idt_init_with_selector(uint16_t selector) {
+    idt_code_selector = selector ? selector : 0x08;
     set_idt_gate(0, (uint64_t)isr0);
     set_idt_gate(1, (uint64_t)isr1);
     set_idt_gate(2, (uint64_t)isr2);
@@ -543,4 +545,8 @@ void idt_init(void) {
     idt_ptr.limit = (uint16_t)(sizeof(idt) - 1);
     idt_ptr.base = (uint64_t)idt;
     __asm__ volatile("lidt %0" :: "m"(idt_ptr) : "memory");
+}
+
+void idt_init(void) {
+    idt_init_with_selector(0x08);
 }

@@ -1179,6 +1179,8 @@ isr_common:
     mov 120(%rsp), %rdi
     mov 128(%rsp), %rsi
     mov 136(%rsp), %rdx
+    mov 144(%rsp), %rcx
+    mov 152(%rsp), %r8
     mov %rsp, %r12
     andq $-16, %rsp
     cld

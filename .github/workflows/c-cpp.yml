@@ -96,6 +96,14 @@ jobs:
             --boot bios \
             --jobs 4
 
+      - name: Run QFS host and crash-consistency tests
+        run: |
+          bash tools/qfs/run_crash_tests.sh
+
+      - name: Run QFS IDE persistence and restart test
+        run: |
+          bash tools/qboot/test_qfs_ide.sh
+
       - name: Run actual QEMU BIOS boot test
         run: |
           bash tools/qemu_boot_test.sh

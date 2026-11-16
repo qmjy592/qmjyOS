@@ -7,6 +7,9 @@
 #define QM_SYSCALL_ABI_MAJOR 1U
 #define QM_SYSCALL_ABI_MINOR 0U
 
+/* Reserved test probe: exits the Ring 3 smoke test back to its Ring 0 continuation. */
+#define QM_SYSCALL_TEST_EXIT 1U
+
 typedef qm_u64_t qm_syscall_number_t;
 typedef qm_s64_t qm_syscall_result_t;
 

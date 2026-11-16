@@ -5,14 +5,11 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 IMAGE="build/qboot/qboot-bios.img"
-SERIAL_LOG="${TMPDIR:-/tmp}/qmjyos-qboot-serial-$$.log"
-DEBUG_LOG="${TMPDIR:-/tmp}/qmjyos-qboot-debug-$$.log"
+EVIDENCE_DIR="${QBOOT_TEST_EVIDENCE_DIR:-build/test-evidence/qboot-bios}"
+RUN_ID="${QBOOT_TEST_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
+SERIAL_LOG="$EVIDENCE_DIR/serial-$RUN_ID.log"
+DEBUG_LOG="$EVIDENCE_DIR/debugcon-$RUN_ID.log"
 TIMEOUT_SECONDS=20
-
-cleanup() {
-    rm -f "$SERIAL_LOG" "$DEBUG_LOG"
-}
-trap cleanup EXIT
 
 fail() {
     echo "[QBOOT TEST FAIL] $*" >&2
@@ -24,6 +21,13 @@ fail() {
     done
     exit 1
 }
+
+case "$RUN_ID" in
+    ""|*[!A-Za-z0-9._-]*) fail "Invalid QBOOT_TEST_RUN_ID" ;;
+esac
+mkdir -p "$EVIDENCE_DIR" || fail "Cannot create evidence directory: $EVIDENCE_DIR"
+[ ! -e "$SERIAL_LOG" ] && [ ! -e "$DEBUG_LOG" ] ||
+    fail "Evidence path already exists; refusing to overwrite previous logs"
 
 [ -s "$IMAGE" ] || fail "BIOS image not found"
 command -v qemu-system-x86_64 >/dev/null 2>&1 ||
@@ -79,3 +83,4 @@ require_marker "$SERIAL_LOG" "[task A] running"
 require_marker "$SERIAL_LOG" "[task B] running"
 
 echo "[QBOOT TEST PASS] BIOS disk boot and kernel runtime verified."
+echo "[QBOOT TEST] Runtime evidence retained: $EVIDENCE_DIR"

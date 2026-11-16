@@ -8,10 +8,14 @@ qmjyOS 是一个自研的实验性操作系统项目，主要使用 freestanding
 >
 > **当前状态：** 第一阶段“系统骨架建设”已于 2026-11-11 完成验收并上传仓库。项目仍处于实验开发阶段，不适合生产环境，尚未完成全面安全审计。
 
+> **Phase 2/3 integration tranche:** the repository now includes the bounded heap, kernel boot-info/init-registry foundations, and QFS/MBR integrity repairs. This integration bundle adds the Multiboot-to-Boot-Info adapter, ordered startup registration, syscall test-dispatch bridge, ELF64 load core and process metadata table. These remain experimental foundations; the complete process/runtime/QShell boot chain is not yet finished.
+
+
 ## Documentation / 文档导航
 
 ### Project and development / 项目与开发
 - [Phase 1 Completion and Acceptance / 第一阶段完成与验收](docs/development/PHASE1_COMPLETION.md)
+- [Phase 2/3 Integration Status / 第二、三阶段集成状态](docs/architecture/PHASE2_PHASE3_INTEGRATION.md)
 - [QBuild Documentation / QBuild 构建工具说明](tools/qbuild/README.md)
 - [Build and Test Guide / 构建与测试说明](tests/README.md)
 - [QTest Development Plan / QTest 开发计划](tests/qtest/README.md)

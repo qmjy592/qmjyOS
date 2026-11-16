@@ -39,6 +39,13 @@ qm_boot_info_t
 
 具体寄存器状态、分页状态和 CPU 特性必须由协议标志进一步描述。
 
+
+## 2.1 Current x86_64 BIOS compatibility bridge
+
+The current development bootstrap is still Multiboot v1 based: `boot/bios/boot.S` preserves EAX (magic) and EBX (Multiboot information pointer), and `arch/x86_64/boot/entry64.S` passes them to `main(magic, info_addr)`. The Phase 2 compatibility adapter converts that record and its E820 map into an in-kernel `qm_boot_info_t` before ordered subsystem initialization.
+
+The RDI pointer row above describes the target QBoot handoff ABI, not the current legacy bootstrap register state. A future complete QBoot BIOS implementation must construct the versioned structure itself and enter the kernel with RDI pointing to it; the in-kernel adapter is transitional and currently rejects loaded Multiboot modules.
+
 ## 3. 地址约定
 
 结构中的物理地址字段均为物理地址。

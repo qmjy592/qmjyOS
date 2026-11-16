@@ -18,6 +18,8 @@
 #include "qmjy/block.h"
 #include "qmjy/fs.h"
 #include "qmjy/syscall.h"
+#include "qmjy/elf64.h"
+#include "qmjy/process.h"
 #include "qmjy/module.h"
 #include "qmjy/test.h"
 

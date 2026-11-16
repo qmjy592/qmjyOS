@@ -215,6 +215,8 @@ run_test() {
         test-qfs \
         test-interfaces \
         test-kernel-foundation \
+        test-elf64 \
+        test-process \
         test-services \
         test-boot
 }

@@ -315,11 +315,11 @@ int main(void)
     {
         const size_t bitmap_base =
             ((size_t)TEST_PARTITION_START + 1U) * TEST_SECTOR_SIZE;
-        const size_t orphan_byte = bitmap_base + 30U / 8U;
+        const size_t orphan_byte = bitmap_base + 41U / 8U;
         const size_t outside_byte =
             bitmap_base + TEST_PARTITION_SECTORS / 8U;
 
-        /* Block 30 is inside the partition but has no inode owner. */
+        /* Block 41 is inside v2 data space but has no inode owner. */
         test_disk[orphan_byte] |= (unsigned char)(1U << (30U % 8U));
         CHECK(
             qfs_mount(&partition) == VFS_ERR_INVALID,

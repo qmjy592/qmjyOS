@@ -3,4 +3,5 @@
 void serial_init(void);
 void serial_putc(char c);
 void serial_puts(const char *s);
+int serial_is_initialized(void);
 #endif

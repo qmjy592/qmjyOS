@@ -1,5 +1,6 @@
 #include "serial.h"
 #define COM1 0x3F8
+static int serial_initialized;
 static inline void outb(unsigned short port, unsigned char val) {
     __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
 }
@@ -16,6 +17,12 @@ void serial_init(void) {
     outb(COM1 + 3, 0x03);
     outb(COM1 + 2, 0xC7);
     outb(COM1 + 4, 0x0B);
+    serial_initialized = 1;
+}
+
+int serial_is_initialized(void)
+{
+    return serial_initialized;
 }
 static int tx_empty(void) { return inb(COM1 + 5) & 0x20; }
 void serial_putc(char c) {

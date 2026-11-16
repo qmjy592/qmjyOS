@@ -1,0 +1,1680 @@
+===== include/qmjy/heap.h =====
+#ifndef QMJY_HEAP_H
+#define QMJY_HEAP_H
+
+#include "qmjy/types.h"
+#include "qmjy/error.h"
+
+/*
+ * Initial bounded kernel heap.
+ *
+ * The first implementation uses a statically reserved arena so it can be
+ * brought up before the PMM-backed virtual allocator is complete. All
+ * returned pointers are aligned to QM_HEAP_ALIGNMENT (16 bytes on x86_64).
+ * The allocator is not internally synchronized: callers must serialize
+ * access until the kernel lock/preemption layer is available.
+ */
+#ifndef QM_HEAP_SIZE
+#define QM_HEAP_SIZE (256U * 1024U)
+#endif
+
+#define QM_HEAP_ALIGNMENT 16U
+
+typedef struct qm_heap_stats {
+    qm_size_t arena_bytes;
+    qm_size_t free_bytes;
+    qm_size_t largest_free_block;
+    qm_size_t allocated_blocks;
+    qm_size_t free_blocks;
+} qm_heap_stats_t;
+
+qm_status_t qm_heap_init(void);
+void *kmalloc(qm_size_t size);
+void *kcalloc(qm_size_t count, qm_size_t size);
+qm_status_t kfree(void *pointer);
+qm_status_t qm_heap_get_stats(qm_heap_stats_t *stats);
+
+#endif
+
+===== mm/heap/heap.c =====
+#include "qmjy/heap.h"
+
+#include <stdint.h>
+#include <stddef.h>
+
+#define QM_HEAP_MAGIC 0x514D4A5948454150ULL
+#define QM_HEAP_FREE 0U
+#define QM_HEAP_USED 1U
+#define QM_HEAP_MAX_BLOCKS ((QM_HEAP_SIZE / (sizeof(struct qm_heap_block) + QM_HEAP_ALIGNMENT)) + 2U)
+
+struct qm_heap_block {
+    qm_u64_t magic;
+    qm_size_t size;
+    struct qm_heap_block *previous;
+    struct qm_heap_block *next;
+    qm_u32_t state;
+    qm_u32_t reserved;
+} __attribute__((aligned(QM_HEAP_ALIGNMENT)));
+
+static qm_u8_t g_heap_arena[QM_HEAP_SIZE]
+    __attribute__((aligned(QM_HEAP_ALIGNMENT)));
+static struct qm_heap_block *g_heap_first;
+static qm_bool_t g_heap_initialized;
+
+#define QM_HEAP_EFFECTIVE_SIZE \
+    ((qm_size_t)(QM_HEAP_SIZE) & ~((qm_size_t)QM_HEAP_ALIGNMENT - 1U))
+
+static int qm_heap_add_overflow(qm_size_t a, qm_size_t b, qm_size_t *out)
+{
+    if (!out || a > (qm_size_t)-1 - b)
+        return 1;
+    *out = a + b;
+    return 0;
+}
+
+static int qm_heap_align_size(qm_size_t value, qm_size_t *out)
+{
+    const qm_size_t mask = (qm_size_t)QM_HEAP_ALIGNMENT - 1U;
+
+    if (!out || value == 0 || value > (qm_size_t)-1 - mask)
+        return 0;
+
+    *out = (value + mask) & ~mask;
+    return *out != 0;
+}
+
+static qm_bool_t qm_heap_block_valid(const struct qm_heap_block *block)
+{
+    const uintptr_t arena_start = (uintptr_t)g_heap_arena;
+    const uintptr_t arena_end = arena_start + QM_HEAP_EFFECTIVE_SIZE;
+    const uintptr_t header = (uintptr_t)block;
+    uintptr_t payload;
+
+    if (!block || header < arena_start || header > arena_end)
+        return QM_FALSE;
+    if ((header & (QM_HEAP_ALIGNMENT - 1U)) != 0)
+        return QM_FALSE;
+    if (header > arena_end - sizeof(*block))
+        return QM_FALSE;
+    if (block->magic != QM_HEAP_MAGIC)
+        return QM_FALSE;
+    if (block->state != QM_HEAP_FREE && block->state != QM_HEAP_USED)
+        return QM_FALSE;
+
+    payload = header + sizeof(*block);
+    if (block->size == 0 || block->size > arena_end - payload)
+        return QM_FALSE;
+
+    if (block->next) {
+        uintptr_t next = (uintptr_t)block->next;
+        if (next < payload || next > arena_end - sizeof(*block))
+            return QM_FALSE;
+        if ((next & (QM_HEAP_ALIGNMENT - 1U)) != 0)
+            return QM_FALSE;
+        if (block->next->previous != block)
+            return QM_FALSE;
+    }
+    if (block->previous) {
+        uintptr_t previous = (uintptr_t)block->previous;
+        if (previous < arena_start || previous > arena_end - sizeof(*block))
+            return QM_FALSE;
+        if ((previous & (QM_HEAP_ALIGNMENT - 1U)) != 0)
+            return QM_FALSE;
+        if (block->previous->next != block)
+            return QM_FALSE;
+    }
+
+    return QM_TRUE;
+}
+
+static qm_bool_t qm_heap_list_contains(const struct qm_heap_block *target)
+{
+    struct qm_heap_block *block = g_heap_first;
+    qm_size_t visited = 0;
+
+    while (block && visited++ < QM_HEAP_MAX_BLOCKS) {
+        if (!qm_heap_block_valid(block))
+            return QM_FALSE;
+        if (block == target)
+            return QM_TRUE;
+        block = block->next;
+    }
+    return QM_FALSE;
+}
+
+qm_status_t qm_heap_init(void)
+{
+    struct qm_heap_block *first;
+
+    if (g_heap_initialized)
+        return QM_ERR_BUSY;
+    if (QM_HEAP_EFFECTIVE_SIZE <= sizeof(*first) + QM_HEAP_ALIGNMENT)
+        return QM_ERR_NO_SPACE;
+
+    first = (struct qm_heap_block *)(void *)g_heap_arena;
+    first->magic = QM_HEAP_MAGIC;
+    first->size = QM_HEAP_EFFECTIVE_SIZE - sizeof(*first);
+    first->previous = NULL;
+    first->next = NULL;
+    first->state = QM_HEAP_FREE;
+    first->reserved = 0;
+
+    g_heap_first = first;
+    g_heap_initialized = QM_TRUE;
+    return QM_OK;
+}
+
+static qm_status_t qm_heap_split(struct qm_heap_block *block, qm_size_t wanted)
+{
+    qm_size_t minimum;
+    qm_size_t remainder;
+    struct qm_heap_block *tail;
+
+    if (qm_heap_add_overflow(wanted, sizeof(*block), &minimum) ||
+        qm_heap_add_overflow(minimum, QM_HEAP_ALIGNMENT, &minimum))
+        return QM_ERR_OVERFLOW;
+
+    if (block->size < minimum)
+        return QM_OK;
+
+    remainder = block->size - wanted - sizeof(*block);
+    tail = (struct qm_heap_block *)((qm_u8_t *)(block + 1) + wanted);
+
+    tail->magic = QM_HEAP_MAGIC;
+    tail->size = remainder;
+    tail->previous = block;
+    tail->next = block->next;
+    tail->state = QM_HEAP_FREE;
+    tail->reserved = 0;
+
+    if (tail->next)
+        tail->next->previous = tail;
+
+    block->next = tail;
+    block->size = wanted;
+    return QM_OK;
+}
+
+void *kmalloc(qm_size_t size)
+{
+    struct qm_heap_block *block;
+    qm_size_t wanted;
+    qm_size_t visited = 0;
+
+    if (!g_heap_initialized || !qm_heap_align_size(size, &wanted))
+        return NULL;
+
+    block = g_heap_first;
+    while (block && visited++ < QM_HEAP_MAX_BLOCKS) {
+        if (!qm_heap_block_valid(block))
+            return NULL;
+
+        if (block->state == QM_HEAP_FREE && block->size >= wanted) {
+            if (qm_heap_split(block, wanted) != QM_OK)
+                return NULL;
+            block->state = QM_HEAP_USED;
+            return (void *)(block + 1);
+        }
+        block = block->next;
+    }
+
+    return NULL;
+}
+
+void *kcalloc(qm_size_t count, qm_size_t size)
+{
+    qm_size_t total;
+    qm_u8_t *memory;
+
+    if (count == 0 || size == 0 || count > (qm_size_t)-1 / size)
+        return NULL;
+
+    total = count * size;
+    memory = (qm_u8_t *)kmalloc(total);
+    if (!memory)
+        return NULL;
+
+    for (qm_size_t i = 0; i < total; ++i)
+        memory[i] = 0;
+    return memory;
+}
+
+static void qm_heap_merge_next(struct qm_heap_block *block)
+{
+    struct qm_heap_block *next = block->next;
+    uintptr_t expected;
+
+    if (!next || !qm_heap_block_valid(next) ||
+        next->state != QM_HEAP_FREE)
+        return;
+
+    expected = (uintptr_t)(block + 1) + block->size;
+    if (expected != (uintptr_t)next)
+        return;
+
+    if (block->size > (qm_size_t)-1 - sizeof(*next) - next->size)
+        return;
+
+    block->size += sizeof(*next) + next->size;
+    block->next = next->next;
+    if (block->next)
+        block->next->previous = block;
+
+    next->magic = 0;
+    next->size = 0;
+    next->previous = NULL;
+    next->next = NULL;
+    next->state = QM_HEAP_FREE;
+    next->reserved = 0;
+}
+
+qm_status_t kfree(void *pointer)
+{
+    struct qm_heap_block *block;
+    uintptr_t address;
+    uintptr_t arena_start = (uintptr_t)g_heap_arena;
+    uintptr_t arena_end = arena_start + QM_HEAP_EFFECTIVE_SIZE;
+
+    if (!pointer)
+        return QM_OK;
+    if (!g_heap_initialized)
+        return QM_ERR_STATE;
+
+    address = (uintptr_t)pointer;
+    if (address < arena_start + sizeof(*block) || address >= arena_end ||
+        (address & (QM_HEAP_ALIGNMENT - 1U)) != 0)
+        return QM_ERR_INVALID;
+
+    block = (struct qm_heap_block *)(void *)(address - sizeof(*block));
+    if (!qm_heap_list_contains(block))
+        return QM_ERR_INVALID;
+    if (!qm_heap_block_valid(block))
+        return QM_ERR_CORRUPT;
+    if (block->state != QM_HEAP_USED)
+        return QM_ERR_STATE;
+
+    block->state = QM_HEAP_FREE;
+
+    if (block->previous && block->previous->state == QM_HEAP_FREE) {
+        struct qm_heap_block *previous = block->previous;
+        uintptr_t expected = (uintptr_t)(previous + 1) + previous->size;
+        if (expected == (uintptr_t)block) {
+            qm_heap_merge_next(previous);
+            block = previous;
+        }
+    }
+
+    qm_heap_merge_next(block);
+    return QM_OK;
+}
+
+qm_status_t qm_heap_get_stats(qm_heap_stats_t *stats)
+{
+    struct qm_heap_block *block;
+    qm_size_t visited = 0;
+    qm_heap_stats_t result;
+
+    if (!stats)
+        return QM_ERR_INVALID;
+    if (!g_heap_initialized)
+        return QM_ERR_STATE;
+
+    result.arena_bytes = QM_HEAP_EFFECTIVE_SIZE;
+    result.free_bytes = 0;
+    result.largest_free_block = 0;
+    result.allocated_blocks = 0;
+    result.free_blocks = 0;
+
+    block = g_heap_first;
+    while (block) {
+        if (visited++ >= QM_HEAP_MAX_BLOCKS || !qm_heap_block_valid(block))
+            return QM_ERR_CORRUPT;
+
+        if (block->state == QM_HEAP_FREE) {
+            result.free_bytes += block->size;
+            ++result.free_blocks;
+            if (block->size > result.largest_free_block)
+                result.largest_free_block = block->size;
+        } else {
+            ++result.allocated_blocks;
+        }
+        block = block->next;
+    }
+
+    *stats = result;
+    return QM_OK;
+}
+
+===== tests/memory/heap_host_test.c =====
+#include "qmjy/heap.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+static unsigned int failures;
+
+#define CHECK(expression) do { \
+    if (!(expression)) { \
+        fprintf(stderr, "[FAIL] %s:%d: %s\n", __FILE__, __LINE__, #expression); \
+        ++failures; \
+    } else { \
+        printf("[PASS] %s\n", #expression); \
+    } \
+} while (0)
+
+static void test_basic_and_alignment(void)
+{
+    void *a = kmalloc(1);
+    void *b = kmalloc(17);
+    qm_heap_stats_t stats;
+
+    CHECK(a != NULL);
+    CHECK(b != NULL);
+    CHECK(((uintptr_t)a & (QM_HEAP_ALIGNMENT - 1U)) == 0);
+    CHECK(((uintptr_t)b & (QM_HEAP_ALIGNMENT - 1U)) == 0);
+    CHECK(qm_heap_get_stats(&stats) == QM_OK);
+    CHECK(stats.allocated_blocks == 2);
+    CHECK(stats.free_blocks >= 1);
+    CHECK(kfree(a) == QM_OK);
+    CHECK(kfree(b) == QM_OK);
+}
+
+static void test_calloc_and_invalid_free(void)
+{
+    unsigned char *memory = (unsigned char *)kcalloc(32, 3);
+    int foreign = 7;
+
+    CHECK(memory != NULL);
+    if (memory) {
+        int all_zero = 1;
+        for (unsigned int i = 0; i < 96; ++i) {
+            if (memory[i] != 0) all_zero = 0;
+        }
+        CHECK(all_zero);
+        CHECK(kfree(memory) == QM_OK);
+        CHECK(kfree(memory) == QM_ERR_STATE);
+        CHECK(kfree(memory + QM_HEAP_ALIGNMENT) == QM_ERR_INVALID);
+    }
+
+    CHECK(kcalloc((qm_size_t)-1, 2) == NULL);
+    CHECK(kmalloc(0) == NULL);
+    CHECK(kfree(&foreign) == QM_ERR_INVALID);
+    CHECK(kfree(NULL) == QM_OK);
+}
+
+static void test_coalescing(void)
+{
+    void *a = kmalloc(1024);
+    void *b = kmalloc(1024);
+    void *c = kmalloc(1024);
+    qm_heap_stats_t before;
+    qm_heap_stats_t after;
+
+    CHECK(a != NULL && b != NULL && c != NULL);
+    CHECK(qm_heap_get_stats(&before) == QM_OK);
+    CHECK(kfree(a) == QM_OK);
+    CHECK(kfree(c) == QM_OK);
+    CHECK(kfree(b) == QM_OK);
+    CHECK(qm_heap_get_stats(&after) == QM_OK);
+    CHECK(after.free_blocks == 1);
+    CHECK(after.free_bytes > before.free_bytes);
+    CHECK(after.largest_free_block == after.free_bytes);
+}
+
+static void test_exhaustion_and_recovery(void)
+{
+    void *blocks[2048];
+    qm_size_t count = 0;
+    qm_heap_stats_t stats;
+
+    while (count < (qm_size_t)(sizeof(blocks) / sizeof(blocks[0]))) {
+        void *p = kmalloc(128);
+        if (!p) break;
+        blocks[count++] = p;
+    }
+
+    CHECK(count > 0);
+    CHECK(kmalloc(128) == NULL);
+    {
+        int freed_all = 1;
+        for (qm_size_t i = 0; i < count; ++i) {
+            if (kfree(blocks[i]) != QM_OK) freed_all = 0;
+        }
+        CHECK(freed_all);
+    }
+
+    CHECK(qm_heap_get_stats(&stats) == QM_OK);
+    CHECK(stats.free_blocks == 1);
+    CHECK(stats.allocated_blocks == 0);
+}
+
+int main(void)
+{
+    CHECK(qm_heap_init() == QM_OK);
+    CHECK(qm_heap_init() == QM_ERR_BUSY);
+    test_basic_and_alignment();
+    test_calloc_and_invalid_free();
+    test_coalescing();
+    test_exhaustion_and_recovery();
+
+    if (failures) {
+        fprintf(stderr, "Heap tests failed: %u\n", failures);
+        return EXIT_FAILURE;
+    }
+    puts("Kernel heap host tests: PASS");
+    return EXIT_SUCCESS;
+}
+
+===== docs/architecture/MM_HEAP_DESIGN.md =====
+# qmjyOS MM_HEAP — first implementation tranche
+
+## Scope
+
+This tranche introduces a bounded, statically reserved kernel heap for the x86_64 development baseline. It is intentionally an early allocator, not the final PMM/VMM-backed heap and not a slab allocator.
+
+## Contract
+
+- `qm_heap_init()` initializes the arena exactly once; a second initialization returns `QM_ERR_BUSY` and never invalidates live pointers.
+- `kmalloc(n)` returns `NULL` for zero size, overflow, uninitialized heap or exhaustion.
+- Successful allocations are aligned to 16 bytes.
+- `kcalloc(count, size)` checks multiplication overflow and zeroes the returned range.
+- `kfree(NULL)` succeeds. Foreign pointers and interior pointers are rejected. A second free is rejected with `QM_ERR_STATE`.
+- Adjacent free blocks are coalesced, allowing reuse after fragmentation is removed.
+- `qm_heap_get_stats()` reports arena size, free payload bytes, largest free block and block counts.
+
+## Ownership and execution context
+
+The allocator owns one 256 KiB `.bss` arena. It does not allocate or release physical pages. Returned storage is valid until `kfree()` or system shutdown. There is no lock, IRQ masking or preemption control inside the allocator; callers must serialize calls. It must not be used concurrently from task and interrupt contexts. This limitation is explicit until the kernel lock/preemption layer is implemented.
+
+## Integration
+
+QBuild maps `mm/heap/heap.c` into `MM_HEAP`, and `kernel/core/main.c` initializes it immediately after serial output setup and before filesystem/storage initialization. A failed initialization is logged; current heap-dependent consumers remain disabled because they are not yet connected. The module remains `experimental`: the implementation is built into the kernel, but it is a fixed arena, has no PMM/VMM growth path and has not been exercised in QEMU runtime. The host test covers 16-byte alignment, basic allocation, zeroing, invalid/double free, coalescing, exhaustion and recovery.
+
+## Not claimed
+
+This does not complete `MM_SLAB`, general virtual memory, multi-CPU safety, interrupt-safe allocation, DMA allocation or user-space memory allocation.
+
+===== phase2_heap/apply_phase2_heap.sh =====
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+find_root() {
+    local here="$1"
+    while :; do
+        if [[ -f "$here/Makefile" && \
+              -f "$here/tools/qbuild/module_plan.py" && \
+              -f "$here/config/modules.status" && \
+              -f "$here/include/qmjy/types.h" ]]; then
+            printf '%s\n' "$here"
+            return 0
+        fi
+        [[ "$here" == "/" ]] && break
+        here="$(dirname -- "$here")"
+    done
+    return 1
+}
+
+ROOT="$(find_root "$SCRIPT_DIR" || find_root "$(dirname -- "$SCRIPT_DIR")" || true)"
+if [[ -z "$ROOT" ]]; then
+    echo "[FAIL] Cannot locate qmjyOS repository root." >&2
+    exit 1
+fi
+cd "$ROOT"
+
+printf '[PHASE 2 MM_HEAP] Project root: %s\n' "$ROOT"
+
+python3 - "$SCRIPT_DIR" <<'PY'
+from pathlib import Path
+from datetime import datetime
+import os
+import re
+import shutil
+import stat
+import tempfile
+import sys
+
+ROOT = Path.cwd()
+PAYLOAD = Path(sys.argv[1])
+NEW_FILES = [
+    "include/qmjy/heap.h",
+    "mm/heap/heap.c",
+    "tests/memory/heap_host_test.c",
+    "docs/architecture/MM_HEAP_DESIGN.md",
+]
+EXISTING_FILES = [
+    "Makefile",
+    "tools/qbuild/module_plan.py",
+    "tools/qbuild/qbuild",
+    "config/modules.status",
+    "tests/interfaces/interface_header_test.c",
+    "kernel/core/main.c",
+]
+
+
+def fail(message):
+    raise SystemExit("[FAIL] " + message + "; no project files were changed.")
+
+
+for name in EXISTING_FILES:
+    if not (ROOT / name).is_file():
+        fail(f"missing required project file: {name}")
+
+payload = {}
+for name in NEW_FILES:
+    source = PAYLOAD / name
+    if not source.is_file():
+        fail(f"package payload missing: {name}")
+    data = source.read_bytes()
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        fail(f"package file is not UTF-8: {name}")
+    payload[name] = data
+
+original = {name: (ROOT / name).read_bytes() for name in EXISTING_FILES}
+updated = {name: data.decode("utf-8") for name, data in original.items()}
+
+# Refuse an unrelated implementation of the same exported symbols.
+source_pattern = re.compile(r"(?m)^[ \t]*(?:static[ \t]+)?(?:[A-Za-z_]\w*[ \t*]+)+(?:qm_heap_init|kmalloc|kcalloc|kfree|qm_heap_get_stats)\s*\([^;{}]*\)\s*\{")
+for source in ROOT.rglob("*.c"):
+    if "build" in source.parts or ".git" in source.parts:
+        continue
+    rel = source.relative_to(ROOT).as_posix()
+    if rel == "mm/heap/heap.c":
+        continue
+    try:
+        if source.resolve().is_relative_to(PAYLOAD.resolve()):
+            continue
+    except (OSError, AttributeError):
+        pass
+    try:
+        if source_pattern.search(source.read_text(encoding="utf-8")):
+            fail(f"heap API already has a C implementation: {rel}")
+    except (OSError, UnicodeDecodeError):
+        continue
+
+# QBuild source mapping. MM_HEAP is already enabled in modules.conf and
+# depends on KERNEL_CORE + MM_PAGING; this adds its first source mapping.
+planner = updated["tools/qbuild/module_plan.py"]
+old_map = '''    "MM_PAGING": [
+        ("mm/paging/paging.c", "mm/paging/paging.o"),
+    ],
+'''
+new_map = old_map + '''    "MM_HEAP": [
+        ("mm/heap/heap.c", "mm/heap/heap.o"),
+    ],
+'''
+if new_map not in planner:
+    if planner.count(old_map) != 1:
+        fail("module_plan.py MM_PAGING source-map anchor mismatch")
+    planner = planner.replace(old_map, new_map, 1)
+updated["tools/qbuild/module_plan.py"] = planner
+
+# The heap is source-mapped, built and host-tested, but its fixed arena and
+# lack of synchronization/PMM growth keep the module experimental.
+status = updated["config/modules.status"]
+if "MM_HEAP=experimental" not in status:
+    if status.count("MM_HEAP=planned") != 1:
+        fail("config/modules.status MM_HEAP state anchor mismatch")
+    status = status.replace("MM_HEAP=planned", "MM_HEAP=experimental", 1)
+updated["config/modules.status"] = status
+
+# Public interface compile check.
+headers = updated["tests/interfaces/interface_header_test.c"]
+include_anchor = '#include "qmjy/memory.h"\n'
+heap_include = '#include "qmjy/heap.h"\n'
+if heap_include not in headers:
+    if headers.count(include_anchor) != 1:
+        fail("interface_header_test.c memory header anchor mismatch")
+    headers = headers.replace(include_anchor, include_anchor + heap_include, 1)
+updated["tests/interfaces/interface_header_test.c"] = headers
+
+# Initialize the bounded heap immediately after serial setup, before VFS,
+# block storage or any potential heap consumer. The failure is diagnostic
+# rather than an unconditional boot stop because current consumers do not
+# yet depend on dynamic allocation.
+main_source = updated["kernel/core/main.c"]
+main_include_anchor = '#include "memory.h"\n'
+main_heap_include = '#include "qmjy/heap.h"\n'
+if main_heap_include not in main_source:
+    if main_source.count(main_include_anchor) != 1:
+        fail("kernel/core/main.c memory header anchor mismatch")
+    main_source = main_source.replace(main_include_anchor, main_include_anchor + main_heap_include, 1)
+heap_init_marker = '[MM] Kernel heap initialized (bounded early arena).\\n'
+heap_init_code = '''    if (qm_heap_init() == QM_OK) {
+        serial_puts("[MM] Kernel heap initialized (bounded early arena).\\n");
+    } else {
+        serial_puts("[MM] WARNING: kernel heap initialization failed; heap-dependent services remain disabled.\\n");
+    }
+'''
+if heap_init_marker not in main_source:
+    serial_anchor = '    serial_init();\n'
+    if main_source.count(serial_anchor) != 1:
+        fail("kernel/core/main.c serial_init call anchor mismatch")
+    main_source = main_source.replace(serial_anchor, serial_anchor + heap_init_code, 1)
+if main_heap_include not in main_source or heap_init_marker not in main_source:
+    fail("kernel heap initialization integration invariant failed")
+updated["kernel/core/main.c"] = main_source
+
+# Add a separate build/tests target; do not alter existing clean rules or
+# delete any diagnostic artifacts outside build/tests/heap.
+makefile = updated["Makefile"]
+if "# qmjyOS MM_HEAP host test" not in makefile:
+    makefile += '''
+
+# qmjyOS MM_HEAP host test
+.PHONY: test-heap clean-heap-test
+HOST_HEAP_TEST := build/tests/heap/heap_host_test
+
+test-heap: $(HOST_HEAP_TEST)
+>./$(HOST_HEAP_TEST)
+
+$(HOST_HEAP_TEST): tests/memory/heap_host_test.c mm/heap/heap.c include/qmjy/heap.h | build/tests/heap
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ tests/memory/heap_host_test.c mm/heap/heap.c
+
+build/tests/heap:
+>mkdir -p $@
+
+clean: clean-heap-test
+
+clean-heap-test:
+>rm -rf build/tests/heap
+'''
+updated["Makefile"] = makefile
+
+# Make the heap test part of QBuild's single test command.
+qbuild = updated["tools/qbuild/qbuild"]
+heap_test_line = "        test-heap " + chr(92) + "\n"
+if heap_test_line not in qbuild:
+    anchor = "        test-paging " + chr(92) + "\n"
+    if qbuild.count(anchor) != 1:
+        fail("QBuild run_test test-paging anchor mismatch")
+    qbuild = qbuild.replace(anchor, anchor + heap_test_line, 1)
+updated["tools/qbuild/qbuild"] = qbuild
+
+# Cross-file invariants before any backup/write.
+checks = {
+    "tools/qbuild/module_plan.py": [
+        '("mm/heap/heap.c", "mm/heap/heap.o")',
+    ],
+    "config/modules.status": ["MM_HEAP=experimental"],
+    "tests/interfaces/interface_header_test.c": ['#include "qmjy/heap.h"'],
+    "kernel/core/main.c": ['#include "qmjy/heap.h"', '[MM] Kernel heap initialized (bounded early arena).\\n'],
+    "Makefile": ["test-heap", "tests/memory/heap_host_test.c", "build/tests/heap"],
+    "tools/qbuild/qbuild": ["test-heap"],
+}
+for name, needles in checks.items():
+    for needle in needles:
+        if needle not in updated[name]:
+            fail(f"cross-file invariant missing in {name}: {needle}")
+
+for name, data in payload.items():
+    target = ROOT / name
+    if target.exists() and target.read_bytes() != data:
+        fail(f"destination already exists with different content: {name}")
+
+for name in EXISTING_FILES:
+    if (ROOT / name).read_bytes() != original[name]:
+        fail(f"project file changed during preflight: {name}")
+
+changed = [name for name in EXISTING_FILES if updated[name].encode() != original[name]]
+created = [name for name in NEW_FILES if not (ROOT / name).exists()]
+if not changed and not created:
+    print("[ALREADY] MM_HEAP implementation and integration are already present.")
+    raise SystemExit(0)
+
+stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+backup_dir = ROOT / "build/repair-backups/phase2-mm-heap" / stamp
+backup_dir.mkdir(parents=True, exist_ok=False)
+for name in changed:
+    backup = backup_dir / (name + ".before-phase2-mm-heap")
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / name, backup)
+    if backup.read_bytes() != original[name]:
+        fail(f"backup verification failed: {name}")
+    print(f"[BACKUP] {backup.relative_to(ROOT)}")
+
+
+def stage(target, data, mode):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix="." + target.name + ".heap.", dir=str(target.parent))
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp, mode)
+        return temp
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        temp.unlink(missing_ok=True)
+        raise
+
+
+staged = {}
+committed = []
+try:
+    for name in changed:
+        target = ROOT / name
+        staged[name] = stage(target, updated[name].encode(), stat.S_IMODE(target.stat().st_mode))
+    for name in created:
+        staged[name] = stage(ROOT / name, payload[name], 0o644)
+
+    for name in changed:
+        os.replace(staged[name], ROOT / name)
+        committed.append(name)
+    for name in created:
+        os.replace(staged[name], ROOT / name)
+        committed.append(name)
+except Exception as exc:
+    for name in reversed(committed):
+        target = ROOT / name
+        if name in original:
+            restore = backup_dir / (name + ".before-phase2-mm-heap")
+            shutil.copy2(restore, target)
+        else:
+            target.unlink(missing_ok=True)
+    for temp in staged.values():
+        temp.unlink(missing_ok=True)
+    fail(f"atomic commit failed and committed paths were restored: {exc}")
+
+print("[PASS] MM_HEAP source and build integration installed.")
+print(f"[BACKUP DIR] {backup_dir.relative_to(ROOT)}")
+PY
+
+printf '\n[PHASE 2 MM_HEAP] Running source-level validation.\n'
+bash -n "$SCRIPT_DIR/apply_phase2_heap.sh"
+python3 - <<'PY_CHECK'
+from pathlib import Path
+compile(Path("tools/qbuild/module_plan.py").read_text(encoding="utf-8"),
+        "tools/qbuild/module_plan.py", "exec")
+print("QBuild module planner syntax: PASS")
+PY_CHECK
+python3 tools/qbuild/module_plan.py --check
+make test-heap
+make test-interfaces
+
+printf '\n[PHASE 2 MM_HEAP] Compiling freestanding x86_64 object.\n'
+clang --target=x86_64-unknown-none -m64 -mno-red-zone -mno-sse -mno-mmx \
+    -ffreestanding -fno-stack-protector -fno-pic -fno-pie -nostdlib \
+    -Wall -Wextra -Werror -O2 -Iinclude \
+    -c mm/heap/heap.c -o build/tests/heap/heap.freestanding.o
+
+printf '\n[PHASE 2 MM_HEAP] Full kernel build.\n'
+make -j2 all
+
+printf '\n[PHASE 2 MM_HEAP] Complete. Module status remains experimental until PMM/VMM-backed growth and runtime use are verified.\n'
+
+===== apply_phase2_next.sh =====
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+if [[ ! -x "$SCRIPT_DIR/phase2_foundation/apply_phase2_foundation.sh" || \
+      ! -x "$SCRIPT_DIR/phase2_heap/apply_phase2_heap.sh" ]]; then
+    echo "[FAIL] Package is incomplete; extract the entire package directory." >&2
+    exit 1
+fi
+
+printf '[qmjyOS] Applying Phase 2 foundation tranche.\n'
+bash "$SCRIPT_DIR/phase2_foundation/apply_phase2_foundation.sh"
+printf '\n[qmjyOS] Applying Phase 2 MM_HEAP tranche.\n'
+bash "$SCRIPT_DIR/phase2_heap/apply_phase2_heap.sh"
+printf '\n[qmjyOS] Phase 2 foundation + MM_HEAP integration complete.\n'
+
+
+===== kernel/core/main.c (updated local snapshot) =====
+#include "serial.h"
+#include "idt.h"
+#include "pic.h"
+#include "timer.h"
+#include "task.h"
+#include "paging.h"
+#include "memory.h"
+#include "qmjy/heap.h"
+#include "../../fs/core/fs_init.h"
+#include "../../fs/qfs/qfs.h"
+#include "../../fs/partition/mbr.h"
+#include "../../drivers/block/ide_pio.h"
+#include <stdint.h>
+
+extern void gdt_load_and_reload_cs(const void *gdtr);
+
+// 分配 16KB 内核栈，用于 Ring 3 中断时切换回来
+uint8_t kernel_stack[16384] __attribute__((aligned(16)));
+uint64_t kernel_stack_top;
+
+// TSS 结构体 (64位)
+struct tss_entry {
+    uint32_t reserved0;
+    uint64_t rsp0;       // 内核栈指针
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved1;
+    uint64_t ist[7];
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t iomap_base;
+} __attribute__((packed));
+
+struct tss_entry tss;
+
+// GDT 表 (7个条目)
+// 0: null
+// 1: kernel code (0x08)
+// 2: kernel data (0x10)
+// 3: user data   (0x18)  <- 注意顺序
+// 4: user code   (0x20)
+// 5: TSS low     (0x28)
+// 6: TSS high
+uint64_t my_gdt[7];
+
+void init_gdt_and_tss() {
+    // 1. 初始化 TSS
+    uint8_t *p = (uint8_t *)&tss;
+    for (int i = 0; i < sizeof(tss); i++) p[i] = 0;
+
+    kernel_stack_top = (uint64_t)kernel_stack + sizeof(kernel_stack);
+    tss.rsp0 = kernel_stack_top; // 设置 Ring 3->0 切换时的内核栈
+    tss.iomap_base = sizeof(tss);
+
+    // 2. 填充 GDT
+    my_gdt[0] = 0;
+    // Kernel Code: 0x08
+    my_gdt[1] = 0x00AF9A000000FFFF;
+    // Kernel Data: 0x10
+    my_gdt[2] = 0x00CF92000000FFFF;
+    // User Data: 0x18 (DPL=3)
+    my_gdt[3] = 0x00CFF2000000FFFF;
+    // User Code: 0x20 (DPL=3, L=1)
+    my_gdt[4] = 0x00AFFA000000FFFF;
+
+    // 3. 构造 TSS 描述符 (类型必须为 0x9，即 0x89)
+    uint64_t base = (uint64_t)&tss;
+    uint64_t limit = sizeof(tss) - 1;
+    uint64_t low = (limit & 0xFFFF) | ((base & 0xFFFFFF) << 16) |
+                   (0x89ULL << 40) | (((limit >> 16) & 0xF) << 48) |
+                   (((base >> 24) & 0xFF) << 56);
+    uint64_t high = base >> 32;
+    my_gdt[5] = low;
+    my_gdt[6] = high;
+
+    // 4. 加载 GDT 和 TSS
+    struct { uint16_t limit; uint64_t base; } __attribute__((packed)) gdtr;
+    gdtr.limit = 7 * 8 - 1;
+    gdtr.base = (uint64_t)my_gdt;
+    gdt_load_and_reload_cs(&gdtr);
+    __asm__ volatile("ltr %0" :: "r"((uint16_t)0x28)); // TSS 选择子
+}
+
+// 用户态测试代码：尝试执行特权指令 cli
+void user_code(void) {
+    __asm__ volatile("cli");
+    while(1);
+}
+
+// 从 Ring 0 跳转到 Ring 3
+void enter_user_mode(void (*user_func)(void)) {
+    static uint64_t user_stack[1024];
+    uint64_t *sp = &user_stack[1024];
+    sp = (uint64_t *)((uint64_t)sp & ~0xF); // 16字节对齐
+    uint64_t user_rsp = (uint64_t)sp;
+
+    // 严格按顺序压入 iretq 需要的 5 个值
+    // SS = 0x18 | 3 = 0x1B (用户数据段，RPL=3)
+    *(--sp) = 0x1B;
+    // 先计算用户态 RSP，再压入，避免同一表达式中修改并读取 sp。
+    *(--sp) = user_rsp;
+    // RFLAGS = 0x202 (IF=1, bit1=1)
+    *(--sp) = 0x202;
+    // CS = 0x20 | 3 = 0x23 (用户代码段，RPL=3)
+    *(--sp) = 0x23;
+    // RIP = 用户函数入口
+    *(--sp) = (uint64_t)user_func;
+
+    __asm__ volatile(
+        "mov %0, %%rsp\n"
+        "iretq\n"
+        :: "r"(sp) : "memory"
+    );
+}
+
+extern char __kernel64_start, __kernel64_end;
+
+
+
+/* -------------------------------------------------
+ * Ring 3 isolated address space test
+ * ------------------------------------------------- */
+
+#define RING3_CODE_VA  0x0000000040000000ULL
+#define RING3_STACK_VA 0x0000000040001000ULL
+
+extern void ring3_enter(uint64_t user_rsp, uint64_t user_rip);
+extern char user_blob_start[];
+extern char user_blob_end[];
+
+static void ring3_zero_page(uint64_t physical)
+{
+    volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)physical;
+    for (size_t i = 0; i < MM_PAGE_SIZE / sizeof(uint64_t); ++i)
+        p[i] = 0;
+}
+
+/*
+ * Called from syscall_entry on the TSS.RSP0 kernel stack.
+ * RAX=1 is the Ring 3 test-exit request.
+ */
+void ring3_syscall_handler(uint64_t syscall_number)
+{
+    if (syscall_number == 1) {
+        serial_puts("[Ring 3] System call received successfully.\n");
+        serial_puts("[Ring 3] Returning to Ring 0.\n");
+    } else {
+        serial_puts("[Ring 3] Unknown system call.\n");
+    }
+}
+
+static int ring3_prepare_and_run(void)
+{
+    uint64_t code_pa = 0;
+    uint64_t stack_pa = 0;
+    uint64_t query_pa = 0;
+    uint64_t query_flags = 0;
+    int code_mapped = 0;
+    int stack_mapped = 0;
+    int activated = 0;
+    int stack_page_releasable = 1;
+    int code_page_releasable = 1;
+    int result = -1;
+
+    const size_t blob_size =
+        (size_t)(user_blob_end - user_blob_start);
+
+    serial_puts("\n[Ring 3] Preparing isolated user address space.\n");
+
+    if (!vm_nx_enabled()) {
+        serial_puts("[Ring 3] ERROR: CPU NX support or EFER.NXE unavailable.\n");
+        return -1;
+    }
+
+    if (blob_size == 0 || blob_size > MM_PAGE_SIZE) {
+        serial_puts("[Ring 3] ERROR: user code size invalid.\n");
+        return -1;
+    }
+
+    /*
+     * Rebuild clean inactive page tables after the paging self-test.
+     */
+    if (vm_init() != VM_OK) {
+        serial_puts("[Ring 3] ERROR: vm_init failed.\n");
+        return -1;
+    }
+
+    if (mm_alloc_page(&code_pa) != MM_OK) {
+        serial_puts("[Ring 3] ERROR: cannot allocate user code page.\n");
+        return -1;
+    }
+
+    if (mm_alloc_page(&stack_pa) != MM_OK) {
+        serial_puts("[Ring 3] ERROR: cannot allocate user stack page.\n");
+        mm_free_page(code_pa);
+        return -1;
+    }
+
+    ring3_zero_page(code_pa);
+    ring3_zero_page(stack_pa);
+
+    /* Copy the position-independent user program to its own page. */
+    {
+        volatile uint8_t *dst = (volatile uint8_t *)(uintptr_t)code_pa;
+        const uint8_t *src = (const uint8_t *)user_blob_start;
+
+        for (size_t i = 0; i < blob_size; ++i)
+            dst[i] = src[i];
+    }
+
+    /*
+     * User code: USER, read-only, executable.
+     * User stack: USER, writable, NX.
+     */
+    if (vm_map_page(RING3_CODE_VA, code_pa, VM_USER) != VM_OK) {
+        serial_puts("[Ring 3] ERROR: code mapping failed.\n");
+        goto cleanup;
+    }
+    code_mapped = 1;
+
+    if (vm_map_page(RING3_STACK_VA, stack_pa,
+                    VM_USER | VM_WRITE | VM_NO_EXECUTE) != VM_OK) {
+        serial_puts("[Ring 3] ERROR: stack mapping failed.\n");
+        goto cleanup;
+    }
+    stack_mapped = 1;
+
+    /* Verify user code mapping. */
+    if (vm_query_page(RING3_CODE_VA, &query_pa, &query_flags) != VM_OK ||
+        query_pa != code_pa ||
+        !(query_flags & VM_USER) ||
+        (query_flags & VM_WRITE) ||
+        (query_flags & VM_NO_EXECUTE)) {
+        serial_puts("[Ring 3] ERROR: code permissions invalid.\n");
+        goto cleanup;
+    }
+
+    /* Verify user stack mapping. */
+    if (vm_query_page(RING3_STACK_VA, &query_pa, &query_flags) != VM_OK ||
+        query_pa != stack_pa ||
+        !(query_flags & VM_USER) ||
+        !(query_flags & VM_WRITE) ||
+        !(query_flags & VM_NO_EXECUTE)) {
+        serial_puts("[Ring 3] ERROR: stack permissions invalid.\n");
+        goto cleanup;
+    }
+
+    /* Verify the kernel identity mapping remains supervisor-only. */
+    if (vm_query_page(0x00200000ULL, &query_pa, &query_flags) != VM_OK ||
+        (query_flags & VM_USER)) {
+        serial_puts("[Ring 3] ERROR: kernel mapping is user-accessible.\n");
+        goto cleanup;
+    }
+
+    serial_puts("[Ring 3] User code page: RX, U/S=1.\n");
+    serial_puts("[Ring 3] User stack page: RW/NX, U/S=1.\n");
+    serial_puts("[Ring 3] Kernel identity mapping: supervisor-only.\n");
+
+    /*
+     * All mappings and permissions are ready.
+     * vm_activate switches CR3 only after the kernel identity map exists.
+     */
+    if (vm_activate() != VM_OK) {
+        serial_puts("[Ring 3] ERROR: CR3 activation failed.\n");
+        goto cleanup;
+    }
+    activated = 1;
+
+    serial_puts("[Ring 3] CR3 activated.\n");
+    serial_puts("[Ring 3] Entering CPL3.\n");
+
+    /*
+     * The user program executes:
+     *     mov $1, %eax
+     *     int $0x80
+     *
+     * syscall_entry restores the saved Ring 0 stack and returns here.
+     */
+    ring3_enter(RING3_STACK_VA + MM_PAGE_SIZE - 16,
+                RING3_CODE_VA);
+
+    serial_puts("[Ring 3] Returned to Ring 0 successfully.\n");
+    result = 0;
+
+cleanup:
+    /*
+     * Once CR3 is active, vm_unmap_page invalidates the affected TLB entry.
+     * Keep the active page-table root; the scheduler continues using it.
+     */
+    if (stack_mapped) {
+        if (vm_unmap_page(RING3_STACK_VA) != VM_OK) {
+            serial_puts("[Ring 3] WARNING: stack unmap failed.; page retained.\n");
+            stack_page_releasable = 0;
+            result = -1;
+        }
+    }
+
+    if (code_mapped) {
+        if (vm_unmap_page(RING3_CODE_VA) != VM_OK) {
+            serial_puts("[Ring 3] WARNING: code unmap failed.; page retained.\n");
+            code_page_releasable = 0;
+            result = -1;
+        }
+    }
+
+    if (stack_pa && stack_page_releasable &&
+        mm_free_page(stack_pa) != MM_OK) {
+        serial_puts("[Ring 3] WARNING: stack page release failed.\n");
+        result = -1;
+    }
+
+    if (code_pa && code_page_releasable &&
+        mm_free_page(code_pa) != MM_OK) {
+        serial_puts("[Ring 3] WARNING: code page release failed.\n");
+        result = -1;
+    }
+
+    (void)activated;
+    return result;
+}
+
+
+static void serial_put_hex32(uint32_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    char out[11] = "0x00000000";
+    for (int i = 0; i < 8; ++i) {
+        out[9 - i] = digits[value & 0xFU];
+        value >>= 4;
+    }
+    out[10] = '\0';
+    serial_puts(out);
+}
+
+static void serial_dump_multiboot_map(uint32_t magic, uint32_t info_addr) {
+    serial_puts("[MM DEBUG] magic=");
+    serial_put_hex32(magic);
+    serial_puts(" info=");
+    serial_put_hex32(info_addr);
+    serial_puts("\\n");
+
+    if (!info_addr || (uint64_t)info_addr + 88 > (1ULL << 30)) {
+        serial_puts("[MM DEBUG] info address outside mapped range.\\n");
+        return;
+    }
+
+    const volatile uint32_t *info =
+        (const volatile uint32_t *)(uintptr_t)info_addr;
+
+    uint32_t flags = info[0];
+    uint32_t mmap_length = info[11];
+    uint32_t mmap_addr = info[12];
+
+    serial_puts("[MM DEBUG] flags=");
+    serial_put_hex32(flags);
+    serial_puts(" mmap_addr=");
+    serial_put_hex32(mmap_addr);
+    serial_puts(" mmap_length=");
+    serial_put_hex32(mmap_length);
+    serial_puts("\\n");
+
+    if (!(flags & (1U << 6)) || !mmap_addr || !mmap_length ||
+        (uint64_t)mmap_addr + mmap_length > (1ULL << 30)) {
+        serial_puts("[MM DEBUG] Multiboot mmap header invalid.\\n");
+        return;
+    }
+
+    const volatile uint32_t *entry =
+        (const volatile uint32_t *)(uintptr_t)mmap_addr;
+    uint32_t count = mmap_length / 24;
+    if (count > 4) count = 4;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const volatile uint32_t *e =
+            (const volatile uint32_t *)(uintptr_t)(mmap_addr + i * 24);
+
+        serial_puts("[MM DEBUG] entry ");
+        serial_put_hex32(i);
+        serial_puts(" size=");
+        serial_put_hex32(e[0]);
+        serial_puts(" base_hi=");
+        serial_put_hex32(e[2]);
+        serial_puts(" base_lo=");
+        serial_put_hex32(e[1]);
+        serial_puts(" len_hi=");
+        serial_put_hex32(e[4]);
+        serial_puts(" len_lo=");
+        serial_put_hex32(e[3]);
+        serial_puts(" type=");
+        serial_put_hex32(e[5]);
+        serial_puts("\\n");
+    }
+    (void)entry;
+}
+
+
+/* -------------------------------------------------
+ * IDE + MBR + QFS storage initialization
+ * Uses the secondary IDE device to avoid modifying
+ * the QBoot system disk.
+ * ------------------------------------------------- */
+
+static void storage_init(void)
+{
+    qm_partition_t partitions[4];
+    qm_u32_t partition_count = 0;
+    qm_u32_t i;
+    int result;
+
+    serial_puts("\n[Storage] Initializing IDE block devices.\n");
+
+    result = qm_ide_pio_init();
+
+    if (result != 0) {
+        serial_puts("[Storage] IDE initialization failed.\n");
+        return;
+    }
+
+    serial_puts("[Storage] IDE controller initialized.\n");
+
+    result = qm_mbr_scan(
+        QM_IDE_PRIMARY_SLAVE,
+        partitions,
+        4,
+        &partition_count
+    );
+
+    if (result != 0) {
+        serial_puts("[Storage] Cannot read secondary disk MBR.\n");
+        return;
+    }
+
+    if (partition_count == 0) {
+        serial_puts("[Storage] No partition found on secondary disk.\n");
+        return;
+    }
+
+    serial_puts("[Storage] MBR partition table detected.\n");
+
+    for (i = 0; i < partition_count; ++i) {
+        /*
+         * Normal boot only mounts standard QFS partitions.
+         * The dedicated QFS test partition type 0x7F is ignored.
+         * Normal boot must never format a disk automatically.
+         */
+        if (partitions[i].type != 0x83U) {
+            serial_puts("[Storage] Skipping non-QFS partition.\n");
+            continue;
+        }
+
+        result = qfs_mount_at(&partitions[i], "/disk");
+
+        if (result == VFS_OK) {
+            serial_puts("[Storage] QFS mounted at /disk.\n");
+            return;
+        }
+    }
+
+    serial_puts("[Storage] No valid QFS partition found.\n");
+    serial_puts("[Storage] Disk was NOT formatted or modified.\n");
+}
+
+void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
+    serial_init();
+    if (qm_heap_init() == QM_OK) {
+        serial_puts("[MM] Kernel heap initialized (bounded early arena).\n");
+    } else {
+        serial_puts("[MM] WARNING: kernel heap initialization failed; heap-dependent services remain disabled.\n");
+    }
+    if (fs_init() == 0) {
+        serial_puts("[FS] VFS initialized.\n");
+        serial_puts("[FS] RAMFS mounted as root filesystem.\n");
+    } else {
+        serial_puts("[FS] ERROR: filesystem initialization failed.\n");
+    }
+    serial_puts("Hello, x86_64 kernel!\n");
+    serial_dump_multiboot_map(multiboot_magic, multiboot_info_addr);
+
+    int mm_status = mm_init_from_multiboot(multiboot_magic, multiboot_info_addr,
+        (uint64_t)(uintptr_t)&__kernel64_start, (uint64_t)(uintptr_t)&__kernel64_end);
+    if (mm_status == MM_OK) {
+        serial_puts("Physical page allocator: initialized from Multiboot mmap.\n");
+        if (mm_self_test() == MM_OK) {
+            serial_puts("Physical page allocator self-test: PASS (alloc/free/double-free).\n");
+        } else {
+            serial_puts("Physical page allocator self-test: FAIL.\n");
+        }
+    } else {
+        serial_puts("[MM DEBUG] mm_init_from_multiboot status=");
+        serial_put_hex32((uint32_t)mm_status);
+        serial_puts("\n");
+        serial_puts("Physical page allocator: unavailable (Multiboot map validation failed).\n");
+        serial_puts("Physical page allocator self-test: SKIPPED (allocator unavailable).\n");
+    }
+
+    storage_init();
+
+    if (vm_self_test() == 0) {
+        serial_puts("Paging manager self-test: PASS (inactive page tables).\n");
+    } else {
+        serial_puts("Paging manager self-test: FAIL.\n");
+    }
+
+    pic_remap();
+    idt_init();
+    timer_init(100);
+
+    init_gdt_and_tss();
+
+    serial_puts("GDT and TSS initialized.\n");
+
+    /*
+     * Run the isolated Ring 3 test before starting the cooperative
+     * Ring 0 scheduler. The scheduler itself remains intact.
+     */
+    if (ring3_prepare_and_run() == 0) {
+        serial_puts("[Ring 3] Basic privilege transition: PASS.\n");
+    } else {
+        serial_puts("[Ring 3] Test did not complete successfully.\n");
+    }
+
+    task_init();
+    serial_puts("Starting cooperative Ring 0 scheduler.\n");
+    __asm__ volatile("sti" ::: "memory");
+    task_start();
+}
+
+===== QBuild / module status integration diff =====
+SOURCES_64["MM_HEAP"] += [("mm/heap/heap.c", "mm/heap/heap.o")]
+config/modules.status: MM_HEAP=planned -> MM_HEAP=experimental
+Makefile target: test-heap -> build/tests/heap/heap_host_test
+tools/qbuild/qbuild test list: add test-heap after test-paging
+
+
+===== cat phase2_boot/apply_phase2_boot.sh =====
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+find_root() {
+    local here="$1"
+    while :; do
+        if [[ -f "$here/Makefile" && -f "$here/boot/bios/boot.S" && -f "$here/tools/qbuild/qbuild" ]]; then
+            printf '%s\n' "$here"
+            return 0
+        fi
+        [[ "$here" == "/" ]] && break
+        here="$(dirname -- "$here")"
+    done
+    return 1
+}
+ROOT="$(find_root "$SCRIPT_DIR" || find_root "$(dirname -- "$SCRIPT_DIR")" || true)"
+if [[ -z "$ROOT" ]]; then
+    echo "[FAIL] Cannot locate qmjyOS root. Extract this package under the repository root." >&2
+    exit 1
+fi
+cd "$ROOT"
+printf '[PHASE 2 BOOT] Project root: %s\n' "$ROOT"
+
+python3 - "$SCRIPT_DIR" <<'PY'
+from pathlib import Path
+from datetime import datetime
+import os
+import re
+import shutil
+import tempfile
+import sys
+
+ROOT = Path.cwd()
+PAYLOAD = Path(sys.argv[1])
+BOOT = "boot/bios/boot.S"
+MAKE = "Makefile"
+TEST = "tests/boot/test_bios_nxe.py"
+DOC = "docs/architecture/BOOT_CPU_FEATURES.md"
+OLD = '''    # Enable EFER.NXE only when CPUID reports NX support.
+    mov $0x80000000, %eax
+    cpuid
+    cmp $0x80000001, %eax
+    jb 2f
+    mov $0x80000001, %eax
+    cpuid
+    bt $20, %edx
+    jnc 2f
+    mov $0xC0000080, %ecx
+    rdmsr
+    bts $11, %eax
+    wrmsr
+2:
+'''
+MARKER = '''    /* RING3_NXE_CPU_CHECK: detect extended CPUID NX support */
+'''
+RECIPE_ANCHOR = "\tbash tools/verify_boot.sh\n"
+RECIPE_NEW = "\tpython3 tests/boot/test_bios_nxe.py\n" + RECIPE_ANCHOR
+
+
+def fail(message):
+    raise SystemExit("[FAIL] " + message + "; no project files were changed.")
+
+for name in (BOOT, MAKE):
+    if not (ROOT / name).is_file():
+        fail(f"missing required source: {name}")
+for name in (TEST, DOC):
+    if not (PAYLOAD / name).is_file():
+        fail(f"package payload missing: {name}")
+
+boot_bytes = (ROOT / BOOT).read_bytes()
+make_bytes = (ROOT / MAKE).read_bytes()
+try:
+    boot = boot_bytes.decode("utf-8")
+    make = make_bytes.decode("utf-8")
+except UnicodeDecodeError:
+    fail("boot source or Makefile is not UTF-8")
+
+old_count = boot.count(OLD)
+marker_count = boot.count(MARKER)
+if old_count == 1 and marker_count == 1:
+    updated_boot = boot.replace(OLD, "", 1)
+elif old_count == 0 and marker_count == 1:
+    # Already normalized: retain the single robust feature-detection block.
+    updated_boot = boot
+else:
+    fail(f"NXE duplicate anchor mismatch (duplicate_block={old_count}, robust_block={marker_count})")
+
+if make.count(RECIPE_NEW) == 1:
+    updated_make = make
+elif make.count(RECIPE_ANCHOR) == 1:
+    updated_make = make.replace(RECIPE_ANCHOR, RECIPE_NEW, 1)
+else:
+    fail("Makefile test-boot verification anchor mismatch")
+
+payload = {}
+for name in (TEST, DOC):
+    data = (PAYLOAD / name).read_bytes()
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        fail(f"payload is not UTF-8: {name}")
+    payload[name] = data
+
+# The resulting assembly must retain one NX detection, one NXE-on path,
+# one NXE-off path, and the original CR0.WP/PG transition.
+feature_queries = list(re.finditer(r"(?m)^\s*movl? \$0x80000000, %eax$", updated_boot))
+if len(feature_queries) != 1:
+    fail("expected exactly one extended CPUID maximum-leaf query")
+if updated_boot.count("btl $20, %edx") != 1:
+    fail("expected exactly one NX feature-bit test")
+if updated_boot.count("orl $((1 << 8) | (1 << 11)), %eax") != 1:
+    fail("expected exactly one LME+NXE enable path")
+if updated_boot.count("orl $(1 << 8), %eax") != 1:
+    fail("expected exactly one LME-only fallback path")
+if "or $0x80010000, %eax" not in updated_boot:
+    fail("CR0.PG and CR0.WP enable operation missing")
+feature_position = feature_queries[0].start()
+if updated_boot.index("mov %eax, boot_mb_magic") > feature_position:
+    fail("Multiboot EAX must be saved before CPUID clobbers it")
+if updated_boot.index("mov %ebx, boot_mb_info") > feature_position:
+    fail("Multiboot EBX must be saved before CPUID clobbers it")
+
+changed = []
+if updated_boot.encode() != boot_bytes:
+    changed.append(BOOT)
+if updated_make.encode() != make_bytes:
+    changed.append(MAKE)
+created = [name for name in (TEST, DOC) if not (ROOT / name).exists()]
+for name, data in payload.items():
+    target = ROOT / name
+    if target.exists() and target.read_bytes() != data:
+        fail(f"destination already exists with different content: {name}")
+
+if not changed and not created:
+    print("[ALREADY] duplicate NXE check removed; static regression test and documentation present")
+    raise SystemExit(0)
+
+stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+backup_dir = ROOT / "build/repair-backups/phase2-boot-nxe" / stamp
+backup_dir.mkdir(parents=True, exist_ok=False)
+for name in changed:
+    src = ROOT / name
+    dst = backup_dir / (name + ".before-phase2-boot-nxe")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    if dst.read_bytes() != src.read_bytes():
+        fail(f"backup verification failed: {name}")
+    print(f"[BACKUP] {dst.relative_to(ROOT)}")
+
+updates = {}
+if BOOT in changed:
+    updates[ROOT / BOOT] = (updated_boot.encode(), (ROOT / BOOT).stat().st_mode & 0o777)
+if MAKE in changed:
+    updates[ROOT / MAKE] = (updated_make.encode(), (ROOT / MAKE).stat().st_mode & 0o777)
+for name in created:
+    mode = 0o755 if name == TEST else 0o644
+    updates[ROOT / name] = (payload[name], mode)
+
+staged = {}
+committed = []
+changed_set = set(changed)
+try:
+    for target, (data, mode) in updates.items():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix="." + target.name + ".phase2-boot.", dir=str(target.parent))
+        tmp = Path(tmp_name)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(tmp, mode)
+        staged[target] = tmp
+    for target, tmp in staged.items():
+        os.replace(tmp, target)
+        committed.append(target)
+        print(f"[WRITE] {target.relative_to(ROOT)}")
+except Exception:
+    # Restore replaced project files and remove newly-created payload files.
+    for target in reversed(committed):
+        relative = target.relative_to(ROOT).as_posix()
+        if relative in changed_set:
+            backup = backup_dir / (relative + ".before-phase2-boot-nxe")
+            if backup.is_file():
+                shutil.copy2(backup, target)
+        else:
+            target.unlink(missing_ok=True)
+    raise
+finally:
+    for tmp in staged.values():
+        tmp.unlink(missing_ok=True)
+
+print("[PASS] NXE duplicate-check cleanup applied; existing feature fallback preserved")
+print(f"[BACKUP_DIR] {backup_dir.relative_to(ROOT)}")
+PY
+
+python3 tests/boot/test_bios_nxe.py
+mkdir -p build/tests/boot
+clang --target=i386-unknown-none -m32 -ffreestanding -fno-pic -fno-pie -nostdlib -Wall -O2 -g -c boot/bios/boot.S -o build/tests/boot/boot-nxe.o
+file build/tests/boot/boot-nxe.o
+printf '[PASS] BIOS bootstrap assembly compiled.\n'
+
+===== cat tests/boot/test_bios_nxe.py =====
+#!/usr/bin/env python3
+"""Static regression checks for the BIOS bootstrap NXE feature path."""
+from pathlib import Path
+import sys
+import re
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE = ROOT / "boot/bios/boot.S"
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        print(f"[FAIL] {message}", file=sys.stderr)
+        raise SystemExit(1)
+    print(f"[PASS] {message}")
+
+
+text = SOURCE.read_text(encoding="utf-8")
+require(len(re.findall(r"(?m)^\s*movl? \$0x80000000, %eax$", text)) == 1,
+        "exactly one CPUID extended-leaf detection sequence")
+require(text.count("btl $20, %edx") == 1,
+        "exactly one CPUID NX feature-bit test")
+require(text.count("orl $((1 << 8) | (1 << 11)), %eax") == 1,
+        "NX-supported path enables LME and NXE")
+require(text.count("orl $(1 << 8), %eax") == 1,
+        "NX-unavailable fallback enables LME without NXE")
+require("or $0x80010000, %eax" in text,
+        "CR0.PG and CR0.WP are enabled after EFER setup")
+feature_query = re.search(r"(?m)^\s*movl? \$0x80000000, %eax$", text)
+require(feature_query is not None, "extended CPUID query present")
+require(text.index("mov %eax, boot_mb_magic") < feature_query.start(),
+        "Multiboot EAX saved before CPUID")
+require(text.index("mov %ebx, boot_mb_info") < feature_query.start(),
+        "Multiboot EBX saved before CPUID")
+require("lgdt gdt64_ptr" in text and ".long 0x200000" in text,
+        "existing GDT load and long-mode far jump retained")
+print("BIOS NXE static regression test: PASS")
+
+===== cat docs/architecture/BOOT_CPU_FEATURES.md =====
+# BIOS bootstrap CPU feature setup
+
+The BIOS development bootstrap enters 32-bit protected mode and prepares the
+long-mode transition. Before setting CR0.PG, it must set CR4.PAE and EFER.LME.
+EFER.NXE is conditional: CPUID extended leaf `0x80000001`, EDX bit 20 must
+report NX support before EFER.NXE (bit 11) is set. If NX is unavailable, the
+bootstrap still enables long mode but does not set NXE. The paging manager's
+runtime checks must continue to reject NX mappings unless both CPU support and
+EFER.NXE are present.
+
+The canonical sequence in `boot/bios/boot.S` performs this detection once,
+preserves EBX around CPUID (EBX holds the Multiboot info pointer until it has
+been saved), sets EFER.LME unconditionally, conditionally sets EFER.NXE, and
+then enables CR0.PG and CR0.WP. The static regression test is
+`tests/boot/test_bios_nxe.py` and is included in `make test-boot`.
+
+This is a source-level and assembly-compilation check. It is not a substitute
+for running the boot image in QEMU or on hardware.
+
+===== boot/bios/boot.S exact removed duplicate block =====
+OLD = '''    # Enable EFER.NXE only when CPUID reports NX support.
+    mov $0x80000000, %eax
+    cpuid
+    cmp $0x80000001, %eax
+    jb 2f
+    mov $0x80000001, %eax
+    cpuid
+    bt $20, %edx
+    jnc 2f
+    mov $0xC0000080, %ecx
+    rdmsr
+    bts $11, %eax
+    wrmsr
+2:
+'''
+MARKER = '''    /* RING3_NXE_CPU_CHECK: detect extended CPUID NX support */
+
+===== boot/bios/boot.S retained NXE feature path =====
+    /* RING3_NXE_CPU_CHECK: detect extended CPUID NX support */
+    pushl %ebx
+    movl $0x80000000, %eax
+    cpuid
+    cmpl $0x80000001, %eax
+    jb .Lring3_nx_unavailable
+    movl $0x80000001, %eax
+    cpuid
+    btl $20, %edx
+    jnc .Lring3_nx_unavailable
+    popl %ebx
+
+    movl $0xC0000080, %ecx
+    rdmsr
+    orl $((1 << 8) | (1 << 11)), %eax
+    wrmsr
+    jmp .Lring3_efer_done
+
+.Lring3_nx_unavailable:
+    popl %ebx
+    movl $0xC0000080, %ecx
+    rdmsr
+    orl $(1 << 8), %eax
+    wrmsr
+
+.Lring3_efer_done:
+    mov %cr0, %eax
+    or $0x80010000, %eax
+    mov %eax, %cr0
+
+===== Makefile test-boot insertion =====
+    python3 tests/boot/test_bios_nxe.py
+    bash tools/verify_boot.sh

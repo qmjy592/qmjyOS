@@ -6,6 +6,8 @@
 #include "paging.h"
 #include "memory.h"
 #include "qmjy/heap.h"
+#include "qmjy/kernel.h"
+#include "qmjy/syscall.h"
 #include "../../fs/core/fs_init.h"
 #include "../../fs/qfs/qfs.h"
 #include "../../fs/partition/mbr.h"
@@ -114,6 +116,7 @@ void enter_user_mode(void (*user_func)(void)) {
 }
 
 extern char __kernel64_start, __kernel64_end;
+extern void _start64(void);
 
 
 
@@ -139,14 +142,29 @@ static void ring3_zero_page(uint64_t physical)
  * Called from syscall_entry on the TSS.RSP0 kernel stack.
  * RAX=1 is the Ring 3 test-exit request.
  */
+/*
+ * The only syscall exposed by the current Ring 3 probe is a test exit request.
+ * It is deliberately routed through the generic dispatcher, but it is not a
+ * production process-exit ABI and does not copy user pointers.
+ */
+static qm_syscall_result_t syscall_test_exit(
+    const qm_syscall_context_t *context)
+{
+    if (context == NULL || context->number != QM_SYSCALL_TEST_EXIT)
+        return QM_ERR_INVALID;
+    serial_puts("[Ring 3] System call received successfully.\n");
+    serial_puts("[Ring 3] Returning to Ring 0.\n");
+    return QM_OK;
+}
+
 void ring3_syscall_handler(uint64_t syscall_number)
 {
-    if (syscall_number == 1) {
-        serial_puts("[Ring 3] System call received successfully.\n");
-        serial_puts("[Ring 3] Returning to Ring 0.\n");
-    } else {
-        serial_puts("[Ring 3] Unknown system call.\n");
-    }
+    qm_syscall_context_t context = {0};
+    qm_syscall_result_t result;
+    context.number = syscall_number;
+    result = qm_syscall_dispatch(&context);
+    if (result != QM_OK)
+        serial_puts("[Ring 3] System call rejected by dispatcher.\n");
 }
 
 static int ring3_prepare_and_run(void)
@@ -459,59 +477,164 @@ static void storage_init(void)
     serial_puts("[Storage] Disk was NOT formatted or modified.\n");
 }
 
-void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
-    serial_init();
-    if (qm_heap_init() == QM_OK) {
-        serial_puts("[MM] Kernel heap initialized (bounded early arena).\n");
-    } else {
-        serial_puts("[MM] WARNING: kernel heap initialization failed; heap-dependent services remain disabled.\n");
-    }
-    if (fs_init() == 0) {
-        serial_puts("[FS] VFS initialized.\n");
-        serial_puts("[FS] RAMFS mounted as root filesystem.\n");
-    } else {
-        serial_puts("[FS] ERROR: filesystem initialization failed.\n");
-    }
+/* QM_PHASE2_PHASE3_BOOT_INIT: ordered startup registry integration. */
+static uint32_t g_boot_multiboot_magic;
+static uint32_t g_boot_multiboot_info_addr;
+static qm_boot_info_t g_kernel_boot_info;
+static qm_boot_memory_region_t g_kernel_memory_regions[QM_BOOT_MAX_MEMORY_REGIONS];
+
+static qm_status_t kernel_init_early(void)
+{
     serial_puts("Hello, x86_64 kernel!\n");
-    serial_dump_multiboot_map(multiboot_magic, multiboot_info_addr);
+    serial_dump_multiboot_map(g_boot_multiboot_magic, g_boot_multiboot_info_addr);
+    return QM_OK;
+}
 
-    int mm_status = mm_init_from_multiboot(multiboot_magic, multiboot_info_addr,
-        (uint64_t)(uintptr_t)&__kernel64_start, (uint64_t)(uintptr_t)&__kernel64_end);
-    if (mm_status == MM_OK) {
-        serial_puts("Physical page allocator: initialized from Multiboot mmap.\n");
-        if (mm_self_test() == MM_OK) {
-            serial_puts("Physical page allocator self-test: PASS (alloc/free/double-free).\n");
-        } else {
-            serial_puts("Physical page allocator self-test: FAIL.\n");
-        }
-    } else {
-        serial_puts("[MM DEBUG] mm_init_from_multiboot status=");
-        serial_put_hex32((uint32_t)mm_status);
-        serial_puts("\n");
-        serial_puts("Physical page allocator: unavailable (Multiboot map validation failed).\n");
-        serial_puts("Physical page allocator self-test: SKIPPED (allocator unavailable).\n");
-    }
-
-    storage_init();
-
-    if (vm_self_test() == 0) {
-        serial_puts("Paging manager self-test: PASS (inactive page tables).\n");
-    } else {
-        serial_puts("Paging manager self-test: FAIL.\n");
-    }
-
+static qm_status_t kernel_init_arch(void)
+{
     pic_remap();
     idt_init();
     timer_init(100);
-
     init_gdt_and_tss();
-
     serial_puts("GDT and TSS initialized.\n");
+    return QM_OK;
+}
 
-    /*
-     * Run the isolated Ring 3 test before starting the cooperative
-     * Ring 0 scheduler. The scheduler itself remains intact.
-     */
+static qm_status_t kernel_init_memory(void)
+{
+    int status;
+    status = mm_init_from_multiboot(
+        g_boot_multiboot_magic, g_boot_multiboot_info_addr,
+        (uint64_t)(uintptr_t)&__kernel64_start,
+        (uint64_t)(uintptr_t)&__kernel64_end);
+    if (status != MM_OK) {
+        serial_puts("[MM] ERROR: physical page allocator initialization failed.\n");
+        serial_put_hex32((uint32_t)status);
+        serial_puts("\n");
+        return QM_ERR_IO;
+    }
+    serial_puts("Physical page allocator: initialized from Multiboot mmap.\n");
+    if (mm_self_test() != MM_OK) {
+        serial_puts("Physical page allocator self-test: FAIL.\n");
+        return QM_ERR_STATE;
+    }
+    serial_puts("Physical page allocator self-test: PASS (alloc/free/double-free).\n");
+
+    if (qm_heap_init() != QM_OK) {
+        serial_puts("[MM] ERROR: bounded kernel heap initialization failed.\n");
+        return QM_ERR_NO_MEMORY;
+    }
+    serial_puts("[MM] Kernel heap initialized (bounded early arena).\n");
+
+    if (vm_self_test() != 0) {
+        serial_puts("Paging manager self-test: FAIL.\n");
+        return QM_ERR_STATE;
+    }
+    serial_puts("Paging manager self-test: PASS (inactive page tables).\n");
+    return QM_OK;
+}
+
+static qm_status_t kernel_init_core(void)
+{
+    qm_status_t status;
+    if (fs_init() != 0) {
+        serial_puts("[FS] ERROR: filesystem initialization failed.\n");
+        return QM_ERR_IO;
+    }
+    serial_puts("[FS] VFS initialized.\n");
+    serial_puts("[FS] RAMFS mounted as root filesystem.\n");
+
+    status = qm_syscall_register(QM_SYSCALL_TEST_EXIT, syscall_test_exit);
+    if (status != QM_OK) {
+        serial_puts("[SYSCALL] ERROR: test syscall registration failed.\n");
+        return status;
+    }
+    serial_puts("[SYSCALL] Generic dispatcher initialized; Ring 3 test-exit registered.\n");
+    return QM_OK;
+}
+
+static qm_status_t kernel_init_storage(void)
+{
+    storage_init();
+    return QM_OK; /* Storage is optional when no secondary QFS disk is attached. */
+}
+
+/* QM_PHASE2_PHASE3_MAIN: Multiboot compatibility adapter + ordered init. */
+void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr)
+{
+    uint64_t kernel_base;
+    uint64_t kernel_end;
+    uint32_t mmap_addr;
+    qm_status_t status;
+    qm_kernel_init_entry_t entries[] = {
+        {"early-diagnostics", QM_KERNEL_INIT_EARLY, kernel_init_early},
+        {"x86-architecture", QM_KERNEL_INIT_ARCH, kernel_init_arch},
+        {"physical-memory-and-heap", QM_KERNEL_INIT_MEMORY, kernel_init_memory},
+        {"vfs-and-syscall-core", QM_KERNEL_INIT_CORE, kernel_init_core},
+        {"storage-filesystem", QM_KERNEL_INIT_FILESYSTEM, kernel_init_storage}
+    };
+    qm_size_t i;
+
+    serial_init();
+    g_boot_multiboot_magic = multiboot_magic;
+    g_boot_multiboot_info_addr = multiboot_info_addr;
+
+    /* The current bootstrap identity-maps only the first GiB at this stage. */
+    if (multiboot_info_addr == 0 ||
+        (uint64_t)multiboot_info_addr + 88U > (1ULL << 30)) {
+        serial_puts("[BOOT] ERROR: Multiboot info pointer is outside the early identity map.\n");
+        for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+    }
+    mmap_addr = ((const volatile uint32_t *)(uintptr_t)multiboot_info_addr)[12];
+    kernel_base = (uint64_t)(uintptr_t)&__kernel64_start;
+    kernel_end = (uint64_t)(uintptr_t)&__kernel64_end;
+    if (kernel_end <= kernel_base || mmap_addr == 0) {
+        serial_puts("[BOOT] ERROR: kernel or Multiboot memory-map range is invalid.\n");
+        for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+    }
+
+    status = qm_boot_info_from_multiboot_v1(
+        multiboot_magic,
+        (const void *)(uintptr_t)multiboot_info_addr,
+        multiboot_info_addr,
+        (const void *)(uintptr_t)mmap_addr,
+        mmap_addr,
+        g_kernel_memory_regions,
+        (uint64_t)(uintptr_t)g_kernel_memory_regions,
+        QM_BOOT_MAX_MEMORY_REGIONS,
+        kernel_base,
+        kernel_end - kernel_base,
+        kernel_base,
+        (uint64_t)(uintptr_t)&_start64,
+        &g_kernel_boot_info);
+    if (status != QM_OK) {
+        serial_puts("[BOOT] ERROR: Multiboot v1 to qm_boot_info_t conversion failed.\n");
+        serial_put_hex32((uint32_t)status);
+        serial_puts("\n");
+        for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+    }
+    serial_puts("[BOOT] Versioned qm_boot_info_t constructed and validated.\n");
+
+    for (i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
+        status = qm_kernel_init_register(&entries[i]);
+        if (status != QM_OK) {
+            serial_puts("[KERNEL] ERROR: init callback registration failed.\n");
+            serial_put_hex32((uint32_t)status);
+            serial_puts("\n");
+            for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+        }
+    }
+
+    status = qm_kernel_init(&g_kernel_boot_info);
+    if (status != QM_OK) {
+        serial_puts("[KERNEL] ERROR: ordered initialization registry failed.\n");
+        serial_put_hex32((uint32_t)status);
+        serial_puts("\n");
+        for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+    }
+    serial_puts("[KERNEL] Ordered initialization registry: PASS.\n");
+
+    /* Preserve the existing isolated Ring 3 smoke test and cooperative scheduler. */
     if (ring3_prepare_and_run() == 0) {
         serial_puts("[Ring 3] Basic privilege transition: PASS.\n");
     } else {

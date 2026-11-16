@@ -7,7 +7,6 @@
 #define QFS_INODE_SECTORS     8U
 #define QFS_DIRECTORY_START   17U
 #define QFS_DIRECTORY_SECTORS 8U
-#define QFS_DATA_START        25U
 
 #define QFS_DIRECTORY_ENTRIES 64U
 #define QFS_DIRECT_BLOCKS     8U
@@ -45,6 +44,18 @@ static qm_block_device_id_t qfs_device_id;
 static qm_u64_t qfs_partition_start;
 static qm_u32_t qfs_total_sectors;
 static int qfs_is_mounted;
+static int qfs_read_only;
+static int qfs_needs_recovery;
+static qm_u32_t qfs_format_version;
+static qm_u32_t qfs_data_start = QFS_DATA_START;
+static int qfs_tx_active;
+static qm_u32_t qfs_tx_count;
+static qm_u32_t qfs_tx_sequence;
+struct qfs_tx_entry {
+    qm_u32_t lba;
+    qm_u8_t data[QFS_SECTOR_SIZE];
+};
+static struct qfs_tx_entry qfs_tx_entries[QFS_JOURNAL_MAX_ENTRIES];
 static struct vfs_node *qfs_mountpoint;
 
 static const struct vfs_filesystem qfs_descriptor = {
@@ -144,41 +155,78 @@ static qm_u32_t qfs_read_u32(const qm_u8_t *p)
            ((qm_u32_t)p[3] << 24);
 }
 
-static int qfs_read_sector(qm_u32_t relative_lba, void *buffer)
+static int qfs_read_sector_raw(qm_u32_t relative_lba, void *buffer)
 {
     if (!qfs_is_mounted)
         return QFS_ERR_IO;
-
     if (relative_lba >= qfs_total_sectors)
         return QFS_ERR_CORRUPT;
-
-    if (qm_block_read(
-            qfs_device_id,
-            qfs_partition_start + relative_lba,
-            1,
-            buffer) != 0)
+    if (qm_block_read(qfs_device_id,
+                      qfs_partition_start + relative_lba,
+                      1, buffer) != 0)
         return QFS_ERR_IO;
-
     return 0;
+}
+
+static int qfs_write_sector_raw(qm_u32_t relative_lba,
+                                const void *buffer)
+{
+    if (!qfs_is_mounted)
+        return QFS_ERR_IO;
+    if (relative_lba >= qfs_total_sectors)
+        return QFS_ERR_CORRUPT;
+    if (qm_block_write(qfs_device_id,
+                       qfs_partition_start + relative_lba,
+                       1, buffer) != 0)
+        return QFS_ERR_IO;
+    return 0;
+}
+
+static int qfs_read_sector(qm_u32_t relative_lba, void *buffer)
+{
+    qm_u32_t i;
+    if (!qfs_is_mounted || qfs_needs_recovery)
+        return QFS_ERR_IO;
+    if (relative_lba >= qfs_total_sectors)
+        return QFS_ERR_CORRUPT;
+    if (qfs_tx_active) {
+        for (i = 0; i < qfs_tx_count; ++i) {
+            if (qfs_tx_entries[i].lba == relative_lba) {
+                qfs_copy(buffer, qfs_tx_entries[i].data, QFS_SECTOR_SIZE);
+                return 0;
+            }
+        }
+    }
+    return qfs_read_sector_raw(relative_lba, buffer);
 }
 
 static int qfs_write_sector(qm_u32_t relative_lba,
                             const void *buffer)
 {
-    if (!qfs_is_mounted)
+    qm_u32_t i;
+    if (!qfs_is_mounted || qfs_needs_recovery)
         return QFS_ERR_IO;
-
     if (relative_lba >= qfs_total_sectors)
         return QFS_ERR_CORRUPT;
-
-    if (qm_block_write(
-            qfs_device_id,
-            qfs_partition_start + relative_lba,
-            1,
-            buffer) != 0)
-        return QFS_ERR_IO;
-
-    return 0;
+    if (qfs_tx_active) {
+        if (relative_lba == 0 ||
+            (relative_lba >= QFS_JOURNAL_START &&
+             relative_lba < QFS_JOURNAL_START + QFS_JOURNAL_SECTORS))
+            return QFS_ERR_CORRUPT;
+        for (i = 0; i < qfs_tx_count; ++i) {
+            if (qfs_tx_entries[i].lba == relative_lba) {
+                qfs_copy(qfs_tx_entries[i].data, buffer, QFS_SECTOR_SIZE);
+                return 0;
+            }
+        }
+        if (qfs_tx_count >= QFS_JOURNAL_MAX_ENTRIES)
+            return QFS_ERR_LIMIT;
+        qfs_tx_entries[qfs_tx_count].lba = relative_lba;
+        qfs_copy(qfs_tx_entries[qfs_tx_count].data, buffer, QFS_SECTOR_SIZE);
+        ++qfs_tx_count;
+        return 0;
+    }
+    return qfs_write_sector_raw(relative_lba, buffer);
 }
 
 static int qfs_flush(void)
@@ -187,6 +235,295 @@ static int qfs_flush(void)
         return QFS_ERR_IO;
 
     return 0;
+}
+
+/* QFS v2 redo journal. All journal I/O bypasses the transaction overlay. */
+#define QFS_JOURNAL_HEADER_MAGIC 0x324C4E4AU
+#define QFS_JOURNAL_COMMIT_MAGIC 0x324D434AU
+#define QFS_JOURNAL_FORMAT       1U
+#define QFS_JOURNAL_HEADER_LBA   QFS_JOURNAL_START
+#define QFS_JOURNAL_PAYLOAD_LBA  (QFS_JOURNAL_START + 1U)
+#define QFS_JOURNAL_COMMIT_A     (QFS_JOURNAL_START + 1U + QFS_JOURNAL_MAX_ENTRIES)
+#define QFS_JOURNAL_COMMIT_B     (QFS_JOURNAL_COMMIT_A + 1U)
+#define QFS_JOURNAL_CRC_OFFSET   508U
+
+static qm_u32_t qfs_crc32(const qm_u8_t *data, qm_u32_t size)
+{
+    qm_u32_t crc = 0xFFFFFFFFU;
+    qm_u32_t i;
+    qm_u32_t bit;
+
+    for (i = 0; i < size; ++i) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8U; ++bit)
+            crc = (crc >> 1) ^
+                (0xEDB88320U & (qm_u32_t)-(int)(crc & 1U));
+    }
+    return ~crc;
+}
+
+static int qfs_is_zero_sector(const qm_u8_t *sector)
+{
+    qm_u32_t i;
+    for (i = 0; i < QFS_SECTOR_SIZE; ++i) {
+        if (sector[i] != 0)
+            return 0;
+    }
+    return 1;
+}
+
+static qm_u32_t qfs_sector_crc(const qm_u8_t *sector)
+{
+    return qfs_crc32(sector, QFS_SECTOR_SIZE);
+}
+
+static int qfs_check_record_crc(const qm_u8_t *record)
+{
+    qm_u8_t copy[QFS_SECTOR_SIZE];
+    qm_u32_t stored;
+    qfs_copy(copy, record, QFS_SECTOR_SIZE);
+    stored = qfs_read_u32(&copy[QFS_JOURNAL_CRC_OFFSET]);
+    qfs_write_u32(&copy[QFS_JOURNAL_CRC_OFFSET], 0);
+    return stored == qfs_sector_crc(copy);
+}
+
+static int qfs_commit_record_valid(const qm_u8_t *record)
+{
+    return qfs_read_u32(&record[0]) == QFS_JOURNAL_COMMIT_MAGIC &&
+           qfs_read_u32(&record[4]) == QFS_JOURNAL_FORMAT &&
+           qfs_read_u32(&record[8]) != 0 &&
+           qfs_read_u32(&record[16]) > 0 &&
+           qfs_read_u32(&record[16]) <= QFS_JOURNAL_MAX_ENTRIES &&
+           qfs_check_record_crc(record);
+}
+
+static int qfs_journal_clear(void)
+{
+    qm_u8_t zero[QFS_SECTOR_SIZE];
+    qfs_zero(zero, sizeof(zero));
+    if (qfs_write_sector_raw(QFS_JOURNAL_COMMIT_A, zero) != 0 ||
+        qfs_write_sector_raw(QFS_JOURNAL_COMMIT_B, zero) != 0 ||
+        qfs_flush() != 0)
+        return QFS_ERR_IO;
+    return 0;
+}
+
+static int qfs_journal_recover(void)
+{
+    qm_u8_t marker_a[QFS_SECTOR_SIZE];
+    qm_u8_t marker_b[QFS_SECTOR_SIZE];
+    qm_u8_t header[QFS_SECTOR_SIZE];
+    qm_u8_t payload[QFS_SECTOR_SIZE];
+    qm_u32_t txid;
+    qm_u32_t header_crc;
+    qm_u32_t count;
+    qm_u32_t i;
+    int valid_a;
+    int valid_b;
+    const qm_u8_t *marker;
+
+    if (qfs_read_sector_raw(QFS_JOURNAL_COMMIT_A, marker_a) != 0 ||
+        qfs_read_sector_raw(QFS_JOURNAL_COMMIT_B, marker_b) != 0)
+        return QFS_ERR_IO;
+
+    if (qfs_is_zero_sector(marker_a) && qfs_is_zero_sector(marker_b))
+        return 0;
+
+    valid_a = qfs_commit_record_valid(marker_a);
+    valid_b = qfs_commit_record_valid(marker_b);
+    if (!valid_a && !valid_b)
+        return QFS_ERR_CORRUPT;
+
+    if (valid_a && valid_b &&
+        (qfs_read_u32(&marker_a[8]) != qfs_read_u32(&marker_b[8]) ||
+         qfs_read_u32(&marker_a[12]) != qfs_read_u32(&marker_b[12]) ||
+         qfs_read_u32(&marker_a[16]) != qfs_read_u32(&marker_b[16])))
+        return QFS_ERR_CORRUPT;
+
+    marker = valid_a ? marker_a : marker_b;
+    txid = qfs_read_u32(&marker[8]);
+    header_crc = qfs_read_u32(&marker[12]);
+    count = qfs_read_u32(&marker[16]);
+
+    if (qfs_read_sector_raw(QFS_JOURNAL_HEADER_LBA, header) != 0)
+        return QFS_ERR_IO;
+    if (qfs_read_u32(&header[0]) != QFS_JOURNAL_HEADER_MAGIC ||
+        qfs_read_u32(&header[4]) != QFS_JOURNAL_FORMAT ||
+        qfs_read_u32(&header[8]) != txid ||
+        qfs_read_u32(&header[12]) != count ||
+        qfs_read_u32(&header[QFS_JOURNAL_CRC_OFFSET]) != header_crc ||
+        !qfs_check_record_crc(header))
+        return QFS_ERR_CORRUPT;
+
+    for (i = 0; i < count; ++i) {
+        qm_u32_t offset = 16U + i * 8U;
+        qm_u32_t home = qfs_read_u32(&header[offset]);
+        qm_u32_t expected_crc = qfs_read_u32(&header[offset + 4U]);
+        qm_u32_t j;
+
+        if (!((home >= QFS_BITMAP_START && home < QFS_JOURNAL_START) ||
+              (home >= qfs_data_start && home < qfs_total_sectors)))
+            return QFS_ERR_CORRUPT;
+
+        for (j = 0; j < i; ++j) {
+            if (qfs_read_u32(&header[16U + j * 8U]) == home)
+                return QFS_ERR_CORRUPT;
+        }
+
+        if (qfs_read_sector_raw(QFS_JOURNAL_PAYLOAD_LBA + i,
+                                payload) != 0)
+            return QFS_ERR_IO;
+        if (qfs_sector_crc(payload) != expected_crc)
+            return QFS_ERR_CORRUPT;
+    }
+
+    /* Replay is idempotent: every payload is a complete sector after-image. */
+    for (i = 0; i < count; ++i) {
+        qm_u32_t offset = 16U + i * 8U;
+        qm_u32_t home = qfs_read_u32(&header[offset]);
+        if (qfs_read_sector_raw(QFS_JOURNAL_PAYLOAD_LBA + i,
+                                payload) != 0 ||
+            qfs_write_sector_raw(home, payload) != 0) {
+            qfs_needs_recovery = 1;
+            return QFS_ERR_IO;
+        }
+    }
+
+    if (qfs_flush() != 0) {
+        qfs_needs_recovery = 1;
+        return QFS_ERR_IO;
+    }
+
+    if (qfs_journal_clear() != 0) {
+        qfs_needs_recovery = 1;
+        return QFS_ERR_IO;
+    }
+
+    qfs_needs_recovery = 0;
+    return 0;
+}
+
+static int qfs_tx_begin(void)
+{
+    if (!qfs_is_mounted || qfs_read_only || qfs_needs_recovery ||
+        qfs_format_version != QFS_VERSION || qfs_tx_active)
+        return QFS_ERR_IO;
+    qfs_tx_active = 1;
+    qfs_tx_count = 0;
+    return 0;
+}
+
+static void qfs_tx_abort(void)
+{
+    qfs_tx_active = 0;
+    qfs_tx_count = 0;
+}
+
+static int qfs_tx_commit(void)
+{
+    qm_u8_t header[QFS_SECTOR_SIZE];
+    qm_u8_t marker[QFS_SECTOR_SIZE];
+    qm_u8_t zero[QFS_SECTOR_SIZE];
+    qm_u8_t old_marker[QFS_SECTOR_SIZE];
+    qm_u32_t i;
+    qm_u32_t txid;
+    qm_u32_t header_crc;
+
+    if (!qfs_tx_active || qfs_needs_recovery)
+        return QFS_ERR_IO;
+
+    if (qfs_tx_count == 0) {
+        qfs_tx_abort();
+        return 0;
+    }
+
+    if (qfs_read_sector_raw(QFS_JOURNAL_COMMIT_A, old_marker) != 0)
+        goto uncertain_failure;
+    if (!qfs_is_zero_sector(old_marker)) {
+        qfs_needs_recovery = 1;
+        qfs_root_node.children = 0;
+        goto prepare_failed;
+    }
+    if (qfs_read_sector_raw(QFS_JOURNAL_COMMIT_B, old_marker) != 0)
+        goto uncertain_failure;
+    if (!qfs_is_zero_sector(old_marker)) {
+        qfs_needs_recovery = 1;
+        qfs_root_node.children = 0;
+        goto prepare_failed;
+    }
+
+    qfs_zero(header, sizeof(header));
+    ++qfs_tx_sequence;
+    if (qfs_tx_sequence == 0)
+        ++qfs_tx_sequence;
+    txid = qfs_tx_sequence;
+    qfs_write_u32(&header[0], QFS_JOURNAL_HEADER_MAGIC);
+    qfs_write_u32(&header[4], QFS_JOURNAL_FORMAT);
+    qfs_write_u32(&header[8], txid);
+    qfs_write_u32(&header[12], qfs_tx_count);
+
+    for (i = 0; i < qfs_tx_count; ++i) {
+        qm_u32_t offset = 16U + i * 8U;
+        qfs_write_u32(&header[offset], qfs_tx_entries[i].lba);
+        qfs_write_u32(&header[offset + 4U],
+                      qfs_sector_crc(qfs_tx_entries[i].data));
+        if (qfs_write_sector_raw(QFS_JOURNAL_PAYLOAD_LBA + i,
+                                 qfs_tx_entries[i].data) != 0)
+            goto prepare_failed;
+    }
+
+    qfs_write_u32(&header[QFS_JOURNAL_CRC_OFFSET], 0);
+    header_crc = qfs_sector_crc(header);
+    qfs_write_u32(&header[QFS_JOURNAL_CRC_OFFSET], header_crc);
+
+    if (qfs_write_sector_raw(QFS_JOURNAL_HEADER_LBA, header) != 0 ||
+        qfs_flush() != 0)
+        goto prepare_failed;
+
+    qfs_zero(marker, sizeof(marker));
+    qfs_write_u32(&marker[0], QFS_JOURNAL_COMMIT_MAGIC);
+    qfs_write_u32(&marker[4], QFS_JOURNAL_FORMAT);
+    qfs_write_u32(&marker[8], txid);
+    qfs_write_u32(&marker[12], header_crc);
+    qfs_write_u32(&marker[16], qfs_tx_count);
+    qfs_write_u32(&marker[QFS_JOURNAL_CRC_OFFSET], 0);
+    qfs_write_u32(&marker[QFS_JOURNAL_CRC_OFFSET],
+                  qfs_sector_crc(marker));
+
+    /* Either valid commit copy is sufficient for replay. */
+    if (qfs_write_sector_raw(QFS_JOURNAL_COMMIT_A, marker) != 0)
+        goto uncertain_failure;
+    if (qfs_write_sector_raw(QFS_JOURNAL_COMMIT_B, marker) != 0)
+        goto uncertain_failure;
+    if (qfs_flush() != 0)
+        goto uncertain_failure;
+
+    for (i = 0; i < qfs_tx_count; ++i) {
+        if (qfs_write_sector_raw(qfs_tx_entries[i].lba,
+                                 qfs_tx_entries[i].data) != 0)
+            goto uncertain_failure;
+    }
+    if (qfs_flush() != 0)
+        goto uncertain_failure;
+
+    qfs_zero(zero, sizeof(zero));
+    if (qfs_write_sector_raw(QFS_JOURNAL_COMMIT_A, zero) != 0 ||
+        qfs_write_sector_raw(QFS_JOURNAL_COMMIT_B, zero) != 0 ||
+        qfs_flush() != 0)
+        goto uncertain_failure;
+
+    qfs_tx_abort();
+    return 0;
+
+prepare_failed:
+    qfs_tx_abort();
+    return QFS_ERR_IO;
+
+uncertain_failure:
+    qfs_needs_recovery = 1;
+    qfs_root_node.children = 0;
+    qfs_tx_abort();
+    return QFS_ERR_IO;
 }
 
 static int qfs_valid_partition(const qm_partition_t *partition)
@@ -237,7 +574,7 @@ static int qfs_save_bitmap(void)
 {
     qm_u32_t i;
 
-    for (i = 0; i < QFS_BITMAP_SECTORS; ++i) {
+    for (i = 0; i < (qfs_tx_active ? 1U : QFS_BITMAP_SECTORS); ++i) {
         if (qfs_write_sector(
                 QFS_BITMAP_START + i,
                 &qfs_bitmap[i * QFS_SECTOR_SIZE]) != 0)
@@ -329,7 +666,7 @@ static int qfs_load_inode(qm_u32_t index)
             qm_u32_t block = qfs_inodes[index].blocks[i];
 
             if (block != 0 &&
-                (block < QFS_DATA_START ||
+                (block < qfs_data_start ||
                  block >= qfs_total_sectors ||
                  !qfs_bitmap_test(block)))
                 return QFS_ERR_CORRUPT;
@@ -419,7 +756,7 @@ static int qfs_allocate_block(qm_u32_t *out_sector)
     if (out_sector == 0)
         return QFS_ERR_CORRUPT;
 
-    for (sector = QFS_DATA_START;
+    for (sector = qfs_data_start;
          sector < qfs_total_sectors;
          ++sector) {
         if (!qfs_bitmap_test(sector)) {
@@ -519,6 +856,8 @@ static int qfs_read_file(
     qm_u32_t total;
     qm_u32_t copied = 0;
 
+    if (qfs_needs_recovery)
+        return VFS_ERR_IO;
     if (node == 0 || (buffer == 0 && size != 0))
         return VFS_ERR_INVALID;
 
@@ -588,6 +927,10 @@ static int qfs_write_file(
     qm_u32_t i;
     struct qfs_inode original_inode;
 
+    if (qfs_needs_recovery)
+        return VFS_ERR_IO;
+    if (qfs_read_only)
+        return VFS_ERR_NOT_SUPPORTED;
     if (node == 0 || (buffer == 0 && size != 0))
         return VFS_ERR_INVALID;
 
@@ -628,6 +971,9 @@ static int qfs_write_file(
             had_old[i] = 1;
         }
     }
+
+    if (qfs_tx_begin() != 0)
+        return VFS_ERR_IO;
 
     /*
      * Allocate all required blocks before changing file data.
@@ -740,15 +1086,16 @@ static int qfs_write_file(
         goto rollback;
     }
 
-    if (qfs_sync_node((qm_u32_t)inode_index) != 0) {
-        failure = VFS_ERR_IO;
-        goto rollback;
+    if (qfs_tx_commit() != 0) {
+        qfs_inodes[inode_index] = original_inode;
+        for (i = 0; i < new_count; ++i)
+            qfs_bitmap_clear(new_blocks[i]);
+        node->size = original_inode.size;
+        return VFS_ERR_IO;
     }
 
-    if (qfs_flush() != 0) {
-        failure = VFS_ERR_IO;
-        goto rollback;
-    }
+    if (qfs_sync_node((qm_u32_t)inode_index) != 0)
+        return VFS_ERR_IO;
 
     return (int)written;
 
@@ -772,11 +1119,8 @@ rollback:
      */
     qfs_inodes[inode_index] = original_inode;
 
-    if (qfs_save_inode((qm_u32_t)inode_index) != 0) {
-        node->size = original_inode.size;
-        qfs_flush();
-        return VFS_ERR_IO;
-    }
+    if (qfs_save_inode((qm_u32_t)inode_index) != 0)
+        failure = VFS_ERR_IO;
 
     node->size = original_inode.size;
 
@@ -785,9 +1129,8 @@ rollback:
             failure = VFS_ERR_IO;
     }
 
-    if (qfs_flush() != 0)
-        failure = VFS_ERR_IO;
-
+    /* All rollback writes are still staged in RAM; discard them atomically. */
+    qfs_tx_abort();
     return failure;
 }
 
@@ -798,6 +1141,8 @@ static int qfs_lookup(
 {
     int inode_index;
 
+    if (qfs_needs_recovery)
+        return VFS_ERR_IO;
     if (directory != &qfs_root_node ||
         name == 0 || result == 0)
         return VFS_ERR_INVALID;
@@ -823,11 +1168,13 @@ static int qfs_create(
     int inode_index;
     int directory_index;
     qm_u32_t i;
-    int rollback_failed = 0;
-
     if (directory != &qfs_root_node ||
         name == 0 || result == 0)
         return VFS_ERR_INVALID;
+    if (qfs_needs_recovery)
+        return VFS_ERR_IO;
+    if (qfs_read_only)
+        return VFS_ERR_NOT_SUPPORTED;
 
     *result = 0;
 
@@ -847,6 +1194,9 @@ static int qfs_create(
 
     if (inode_index < 0 || directory_index < 0)
         return VFS_ERR_NO_SPACE;
+
+    if (qfs_tx_begin() != 0)
+        return VFS_ERR_IO;
 
     qfs_zero(
         &qfs_inodes[inode_index],
@@ -870,18 +1220,18 @@ static int qfs_create(
     for (i = 0; i < length; ++i)
         qfs_directory[directory_index].name[i] = name[i];
 
-    /*
-     * Persist inode first, then its directory reference.
-     * If either operation fails, attempt to restore both records.
-     */
-    if (qfs_save_inode((qm_u32_t)inode_index) != 0)
+    /* Both metadata changes become visible together through the redo log. */
+    if (qfs_save_inode((qm_u32_t)inode_index) != 0 ||
+        qfs_save_directory() != 0)
         goto rollback;
 
-    if (qfs_save_directory() != 0)
-        goto rollback;
-
-    if (qfs_flush() != 0)
-        goto rollback;
+    if (qfs_tx_commit() != 0) {
+        qfs_zero(&qfs_inodes[inode_index], sizeof(qfs_inodes[inode_index]));
+        qfs_zero(&qfs_directory[directory_index],
+                 sizeof(qfs_directory[directory_index]));
+        qfs_zero(qfs_names[inode_index], QFS_MAX_NAME);
+        return VFS_ERR_IO;
+    }
 
     qfs_zero(
         &qfs_nodes[inode_index],
@@ -917,19 +1267,10 @@ rollback:
         &qfs_inodes[inode_index],
         sizeof(qfs_inodes[inode_index]));
 
-    if (qfs_save_inode((qm_u32_t)inode_index) != 0)
-        rollback_failed = 1;
-
-    if (qfs_save_directory() != 0)
-        rollback_failed = 1;
-
-    if (qfs_flush() != 0)
-        rollback_failed = 1;
-
     qfs_zero(qfs_names[inode_index], QFS_MAX_NAME);
     qfs_zero(&qfs_nodes[inode_index], sizeof(qfs_nodes[inode_index]));
-
-    return rollback_failed ? VFS_ERR_IO : VFS_ERR_IO;
+    qfs_tx_abort();
+    return VFS_ERR_IO;
 }
 
 static int qfs_remove(
@@ -942,8 +1283,6 @@ static int qfs_remove(
     qm_u32_t i;
     struct qfs_inode saved_inode;
     struct qfs_directory_entry saved_entry;
-    int rollback_failed = 0;
-    int reclaim_failed = 0;
 
     if (directory != &qfs_root_node || node == 0)
         return VFS_ERR_INVALID;
@@ -976,74 +1315,54 @@ static int qfs_remove(
     if (directory_index < 0)
         return QFS_ERR_CORRUPT;
 
+    if (qfs_needs_recovery)
+        return VFS_ERR_IO;
+    if (qfs_read_only)
+        return VFS_ERR_NOT_SUPPORTED;
+    if (qfs_tx_begin() != 0)
+        return VFS_ERR_IO;
+
     saved_inode = qfs_inodes[inode_index];
     saved_entry = qfs_directory[directory_index];
 
-    /*
-     * First remove the directory reference and make it durable.
-     * The inode and its data blocks remain intact at this point.
-     */
-    qfs_zero(
-        &qfs_directory[directory_index],
-        sizeof(qfs_directory[directory_index]));
+    qfs_zero(&qfs_directory[directory_index],
+             sizeof(qfs_directory[directory_index]));
+    qfs_zero(&qfs_inodes[inode_index], sizeof(qfs_inodes[inode_index]));
 
-    if (qfs_save_directory() != 0 || qfs_flush() != 0)
-        goto rollback;
-
-    /*
-     * Now clear the inode. Only after this is durable may its
-     * data blocks be returned to the free-space bitmap.
-     */
-    qfs_zero(
-        &qfs_inodes[inode_index],
-        sizeof(qfs_inodes[inode_index]));
-
-    if (qfs_save_inode((qm_u32_t)inode_index) != 0 ||
-        qfs_flush() != 0)
-        goto rollback;
-
-    /*
-     * The file is now logically deleted. Detach its VFS node.
-     */
-    *link = node->next;
-
-    qfs_zero(qfs_names[inode_index], QFS_MAX_NAME);
-    qfs_zero(&qfs_nodes[inode_index], sizeof(qfs_nodes[inode_index]));
-
-    /*
-     * Reclaim blocks only after durable inode removal.
-     * A failure here can leak space, but cannot leave a live inode
-     * pointing at a block that has already been marked free.
-     */
     for (i = 0; i < QFS_DIRECT_BLOCKS; ++i) {
-        if (saved_inode.blocks[i] != 0) {
-            if (qfs_free_block(saved_inode.blocks[i]) != 0)
-                reclaim_failed = 1;
-        }
+        if (saved_inode.blocks[i] != 0 &&
+            qfs_free_block(saved_inode.blocks[i]) != 0)
+            goto rollback;
     }
 
-    if (qfs_flush() != 0)
-        reclaim_failed = 1;
+    if (qfs_save_inode((qm_u32_t)inode_index) != 0 ||
+        qfs_save_directory() != 0)
+        goto rollback;
 
-    return reclaim_failed ? VFS_ERR_IO : VFS_OK;
+    if (qfs_tx_commit() != 0) {
+        qfs_inodes[inode_index] = saved_inode;
+        qfs_directory[directory_index] = saved_entry;
+        for (i = 0; i < QFS_DIRECT_BLOCKS; ++i) {
+            if (saved_inode.blocks[i] != 0)
+                qfs_bitmap_set(saved_inode.blocks[i]);
+        }
+        return VFS_ERR_IO;
+    }
+
+    *link = node->next;
+    qfs_zero(qfs_names[inode_index], QFS_MAX_NAME);
+    qfs_zero(&qfs_nodes[inode_index], sizeof(qfs_nodes[inode_index]));
+    return VFS_OK;
 
 rollback:
-    /*
-     * Best-effort restoration if metadata commit failed.
-     */
     qfs_inodes[inode_index] = saved_inode;
     qfs_directory[directory_index] = saved_entry;
-
-    if (qfs_save_inode((qm_u32_t)inode_index) != 0)
-        rollback_failed = 1;
-
-    if (qfs_save_directory() != 0)
-        rollback_failed = 1;
-
-    if (qfs_flush() != 0)
-        rollback_failed = 1;
-
-    return rollback_failed ? VFS_ERR_IO : VFS_ERR_IO;
+    for (i = 0; i < QFS_DIRECT_BLOCKS; ++i) {
+        if (saved_inode.blocks[i] != 0)
+            qfs_bitmap_set(saved_inode.blocks[i]);
+    }
+    qfs_tx_abort();
+    return VFS_ERR_IO;
 }
 
 const struct vfs_operations qfs_file_operations = {
@@ -1134,42 +1453,61 @@ int qfs_format(const qm_partition_t *partition)
 
     if (qfs_is_mounted)
         return VFS_ERR_BUSY;
-
     if (!qfs_valid_partition(partition))
+        return VFS_ERR_INVALID;
+    if (partition->sector_count <= QFS_DATA_START)
         return VFS_ERR_INVALID;
 
     qfs_device_id = partition->device_id;
     qfs_partition_start = partition->start_lba;
     qfs_total_sectors = (qm_u32_t)partition->sector_count;
-
-    /*
-     * Formatting is allowed before mounting, so temporarily enable
-     * internal sector I/O.
-     */
+    qfs_format_version = QFS_VERSION;
+    qfs_data_start = QFS_DATA_START;
+    qfs_read_only = 0;
+    qfs_needs_recovery = 0;
+    qfs_tx_active = 0;
+    qfs_tx_count = 0;
     qfs_is_mounted = 1;
 
-    qfs_zero(qfs_bitmap, sizeof(qfs_bitmap));
-    qfs_zero(qfs_inodes, sizeof(qfs_inodes));
-    qfs_zero(qfs_directory, sizeof(qfs_directory));
-
-    for (i = 0; i < QFS_DATA_START; ++i)
-        qfs_bitmap_set(i);
-
-    if (qfs_save_bitmap() != 0) {
+    /* v2 requires an actual device flush implementation. */
+    if (qfs_flush() != 0) {
         qfs_is_mounted = 0;
         return VFS_ERR_IO;
     }
 
-    for (i = 0; i < QFS_INODE_SECTORS; ++i) {
-        qfs_zero(sector, sizeof(sector));
+    /* Make an old v1/v2 superblock unmountable before overwriting its metadata. */
+    qfs_zero(sector, sizeof(sector));
+    if (qfs_write_sector_raw(0, sector) != 0 || qfs_flush() != 0) {
+        qfs_is_mounted = 0;
+        return VFS_ERR_IO;
+    }
 
-        if (qfs_write_sector(QFS_INODE_START + i, sector) != 0) {
+    qfs_zero(qfs_bitmap, sizeof(qfs_bitmap));
+    qfs_zero(qfs_inodes, sizeof(qfs_inodes));
+    qfs_zero(qfs_directory, sizeof(qfs_directory));
+    for (i = 0; i < qfs_data_start; ++i)
+        qfs_bitmap_set(i);
+
+    /* Clear the complete journal area, including both commit records. */
+    for (i = 0; i < QFS_JOURNAL_SECTORS; ++i) {
+        qfs_zero(sector, sizeof(sector));
+        if (qfs_write_sector_raw(QFS_JOURNAL_START + i, sector) != 0) {
             qfs_is_mounted = 0;
             return VFS_ERR_IO;
         }
     }
-
-    if (qfs_save_directory() != 0) {
+    if (qfs_save_bitmap() != 0) {
+        qfs_is_mounted = 0;
+        return VFS_ERR_IO;
+    }
+    for (i = 0; i < QFS_INODE_SECTORS; ++i) {
+        qfs_zero(sector, sizeof(sector));
+        if (qfs_write_sector_raw(QFS_INODE_START + i, sector) != 0) {
+            qfs_is_mounted = 0;
+            return VFS_ERR_IO;
+        }
+    }
+    if (qfs_save_directory() != 0 || qfs_flush() != 0) {
         qfs_is_mounted = 0;
         return VFS_ERR_IO;
     }
@@ -1184,9 +1522,16 @@ int qfs_format(const qm_partition_t *partition)
     qfs_write_u32(&sector[24], QFS_BITMAP_START);
     qfs_write_u32(&sector[28], QFS_INODE_START);
     qfs_write_u32(&sector[32], QFS_DIRECTORY_START);
+    qfs_write_u32(&sector[36], QFS_JOURNAL_START);
+    qfs_write_u32(&sector[40], QFS_JOURNAL_SECTORS);
+    qfs_write_u32(&sector[44], QFS_JOURNAL_MAX_ENTRIES);
+    qfs_write_u32(&sector[48], 1U); /* redo-journal feature bit */
+    qfs_write_u32(&sector[QFS_JOURNAL_CRC_OFFSET], 0);
+    qfs_write_u32(&sector[QFS_JOURNAL_CRC_OFFSET],
+                  qfs_sector_crc(sector));
 
-    if (qfs_write_sector(0, sector) != 0 ||
-        qfs_flush() != 0) {
+    /* The valid v2 superblock is the final format write. */
+    if (qfs_write_sector_raw(0, sector) != 0 || qfs_flush() != 0) {
         qfs_is_mounted = 0;
         return VFS_ERR_IO;
     }
@@ -1199,6 +1544,7 @@ int qfs_mount(const qm_partition_t *partition)
 {
     qm_u8_t sector[QFS_SECTOR_SIZE];
     qm_u32_t i;
+    int journal_status;
 
     if (qfs_is_mounted)
         return VFS_ERR_BUSY;
@@ -1209,6 +1555,12 @@ int qfs_mount(const qm_partition_t *partition)
     qfs_device_id = partition->device_id;
     qfs_partition_start = partition->start_lba;
     qfs_total_sectors = (qm_u32_t)partition->sector_count;
+    qfs_format_version = 0;
+    qfs_data_start = QFS_LEGACY_DATA_START;
+    qfs_read_only = 0;
+    qfs_needs_recovery = 0;
+    qfs_tx_active = 0;
+    qfs_tx_count = 0;
     qfs_mountpoint = 0;
     qfs_root_node.parent = &qfs_root_node;
     qfs_root_node.children = 0;
@@ -1223,10 +1575,9 @@ int qfs_mount(const qm_partition_t *partition)
         return VFS_ERR_IO;
     }
 
+    qfs_format_version = qfs_read_u32(&sector[4]);
     if (qfs_read_u32(&sector[0]) != QFS_MAGIC ||
-        qfs_read_u32(&sector[4]) != QFS_VERSION ||
         qfs_read_u32(&sector[8]) != qfs_total_sectors ||
-        qfs_read_u32(&sector[12]) != QFS_DATA_START ||
         qfs_read_u32(&sector[16]) != QFS_MAX_INODES ||
         qfs_read_u32(&sector[20]) != QFS_MAX_FILE_SIZE ||
         qfs_read_u32(&sector[24]) != QFS_BITMAP_START ||
@@ -1236,13 +1587,47 @@ int qfs_mount(const qm_partition_t *partition)
         return VFS_ERR_INVALID;
     }
 
+    if (qfs_format_version == QFS_LEGACY_VERSION) {
+        if (qfs_read_u32(&sector[12]) != QFS_LEGACY_DATA_START) {
+            qfs_is_mounted = 0;
+            return VFS_ERR_INVALID;
+        }
+        qfs_data_start = QFS_LEGACY_DATA_START;
+        qfs_read_only = 1;
+    } else if (qfs_format_version == QFS_VERSION) {
+        if (qfs_read_u32(&sector[12]) != QFS_DATA_START ||
+            qfs_read_u32(&sector[36]) != QFS_JOURNAL_START ||
+            qfs_read_u32(&sector[40]) != QFS_JOURNAL_SECTORS ||
+            qfs_read_u32(&sector[44]) != QFS_JOURNAL_MAX_ENTRIES ||
+            qfs_read_u32(&sector[48]) != 1U ||
+            !qfs_check_record_crc(sector)) {
+            qfs_is_mounted = 0;
+            return VFS_ERR_INVALID;
+        }
+        qfs_data_start = QFS_DATA_START;
+        qfs_read_only = 0;
+        if (qfs_flush() != 0) {
+            qfs_is_mounted = 0;
+            return VFS_ERR_IO;
+        }
+        journal_status = qfs_journal_recover();
+        if (journal_status != 0) {
+            qfs_is_mounted = 0;
+            return journal_status == QFS_ERR_CORRUPT
+                ? VFS_ERR_INVALID : VFS_ERR_IO;
+        }
+    } else {
+        qfs_is_mounted = 0;
+        return VFS_ERR_NOT_SUPPORTED;
+    }
+
     if (qfs_load_bitmap() != 0 ||
         qfs_load_directory() != 0) {
         qfs_is_mounted = 0;
         return VFS_ERR_IO;
     }
 
-    for (i = 0; i < QFS_DATA_START; ++i) {
+    for (i = 0; i < qfs_data_start; ++i) {
         if (!qfs_bitmap_test(i)) {
             qfs_is_mounted = 0;
             return VFS_ERR_INVALID;
@@ -1301,7 +1686,7 @@ int qfs_mount(const qm_partition_t *partition)
                 qm_u32_t block = qfs_inodes[i].blocks[j];
 
                 if (j < required) {
-                    if (block < QFS_DATA_START ||
+                    if (block < qfs_data_start ||
                         block >= qfs_total_sectors ||
                         !qfs_bitmap_test(block) ||
                         block_seen[block]) {
@@ -1318,7 +1703,7 @@ int qfs_mount(const qm_partition_t *partition)
         }
 
         /* Every allocated data bit must belong to exactly one inode. */
-        for (i = QFS_DATA_START; i < qfs_total_sectors; ++i) {
+        for (i = qfs_data_start; i < qfs_total_sectors; ++i) {
             if (qfs_bitmap_test(i) != (block_seen[i] != 0)) {
                 qfs_is_mounted = 0;
                 return VFS_ERR_INVALID;
@@ -1428,7 +1813,9 @@ int qfs_unmount(void)
     if (!qfs_is_mounted)
         return VFS_ERR_INVALID;
 
-    if (qfs_flush() != 0)
+    if (qfs_needs_recovery || qfs_tx_active)
+        return VFS_ERR_IO;
+    if (!qfs_read_only && qfs_flush() != 0)
         return VFS_ERR_IO;
 
     if (qfs_mountpoint != 0) {
@@ -1448,11 +1835,37 @@ int qfs_unmount(void)
 
 struct vfs_node *qfs_root(void)
 {
-    if (!qfs_is_mounted)
+    if (!qfs_is_mounted || qfs_needs_recovery)
         return 0;
 
     return &qfs_root_node;
 }
+
+
+#ifdef QFS_TESTING
+void qfs_test_reset_state(void)
+{
+    qfs_zero(&qfs_root_node, sizeof(qfs_root_node));
+    qfs_zero(qfs_nodes, sizeof(qfs_nodes));
+    qfs_zero(qfs_names, sizeof(qfs_names));
+    qfs_zero(qfs_inodes, sizeof(qfs_inodes));
+    qfs_zero(qfs_directory, sizeof(qfs_directory));
+    qfs_zero(qfs_bitmap, sizeof(qfs_bitmap));
+    qfs_zero(qfs_tx_entries, sizeof(qfs_tx_entries));
+    qfs_device_id = 0;
+    qfs_partition_start = 0;
+    qfs_total_sectors = 0;
+    qfs_is_mounted = 0;
+    qfs_read_only = 0;
+    qfs_needs_recovery = 0;
+    qfs_format_version = 0;
+    qfs_data_start = QFS_DATA_START;
+    qfs_tx_active = 0;
+    qfs_tx_count = 0;
+    qfs_tx_sequence = 0;
+    qfs_mountpoint = 0;
+}
+#endif
 
 const struct vfs_filesystem *qfs_filesystem(void)
 {

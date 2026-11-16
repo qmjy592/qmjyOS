@@ -85,10 +85,11 @@ Optional UndefinedBehaviorSanitizer test:
 可选的 UndefinedBehaviorSanitizer 测试：
 
 ```sh
+mkdir -p build/test-evidence
 gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=undefined \
   -fno-sanitize-recover=all -I. mm/physical/memory.c tests/memory_host_test.c \
-  -o /tmp/qmjyOS-memory-test-ubsan
-/tmp/qmjyOS-memory-test-ubsan
+  -o build/test-evidence/qmjyOS-memory-test-ubsan
+build/test-evidence/qmjyOS-memory-test-ubsan
 ```
 
 ## 5. What each test proves / 各测试能证明什么

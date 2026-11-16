@@ -36,6 +36,7 @@ SOURCES_64 = {
         ("kernel/core/main.c", "kernel/core/main.o"),
         ("kernel/core/boot_info.c", "kernel/core/boot_info.o"),
         ("kernel/core/init_registry.c", "kernel/core/init_registry.o"),
+        ("kernel/core/memory_ops.c", "kernel/core/memory_ops.o"),
     ],
     "DRIVER_BLOCK": [
         ("drivers/block/block.c", "drivers/block/block.o"),
@@ -52,6 +53,10 @@ SOURCES_64 = {
     ],
     "MM_HEAP": [
         ("mm/heap/heap.c", "mm/heap/heap.o"),
+    ],
+    "PROCESS": [
+        ("exec/elf/elf64.c", "exec/elf/elf64.o"),
+        ("kernel/core/process.c", "kernel/core/process.o"),
     ],
     "SCHEDULER": [
         ("sched/core/task.c", "sched/core/task.o"),

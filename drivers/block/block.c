@@ -134,8 +134,9 @@ qm_status_t qm_block_flush(qm_block_device_id_t id)
     if (index < 0)
         return (qm_status_t)-1;
 
+    /* A missing flush callback is not a successful durability barrier. */
     if (devices[index].ops.flush == 0)
-        return (qm_status_t)0;
+        return QM_ERR_NOT_SUPPORTED;
 
     return devices[index].ops.flush(id);
 }

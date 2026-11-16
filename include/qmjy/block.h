@@ -29,6 +29,7 @@ typedef struct qm_block_device_ops {
         const void *buffer
     );
 
+    /* If absent, qm_block_flush() returns QM_ERR_NOT_SUPPORTED. */
     qm_status_t (*flush)(
         qm_block_device_id_t id
     );

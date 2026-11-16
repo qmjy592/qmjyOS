@@ -27,7 +27,7 @@ CFLAGS_32 := --target=i386-unknown-none -m32 \
 CFLAGS_64 := --target=x86_64-unknown-none -m64 \
 -mno-red-zone -mno-sse -mno-mmx \
 -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
--nostdlib -Wall -O2 -g -MMD -MP $(CPPFLAGS)
+-nostdlib -fno-builtin -Wall -O2 -g -MMD -MP $(CPPFLAGS)
 
 LDFLAGS_32 := -m elf_i386 -T linker32.ld -nostdlib -static
 LDFLAGS_64 := -m elf_x86_64 -T linker64.ld -nostdlib -static
@@ -217,7 +217,8 @@ HOST_KERNEL_FOUNDATION_DIR := build/tests/kernel-foundation
 HOST_KERNEL_FOUNDATION_TESTS := \
 $(HOST_KERNEL_FOUNDATION_DIR)/kernel-foundation \
 $(HOST_KERNEL_FOUNDATION_DIR)/init-failure \
-$(HOST_KERNEL_FOUNDATION_DIR)/syscall
+$(HOST_KERNEL_FOUNDATION_DIR)/syscall \
+$(HOST_KERNEL_FOUNDATION_DIR)/boot-info-multiboot
 
 .PHONY: test-kernel-foundation
 test-kernel-foundation: $(HOST_KERNEL_FOUNDATION_TESTS)
@@ -233,6 +234,9 @@ $(HOST_KERNEL_FOUNDATION_DIR)/init-failure: tests/kernel/init_failure_test.c ker
 >$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
 
 $(HOST_KERNEL_FOUNDATION_DIR)/syscall: tests/syscall/syscall_test.c kernel/syscall/syscall.c | $(HOST_KERNEL_FOUNDATION_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
+
+$(HOST_KERNEL_FOUNDATION_DIR)/boot-info-multiboot: tests/kernel/boot_info_multiboot_test.c kernel/core/boot_info.c | $(HOST_KERNEL_FOUNDATION_DIR)
 >$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
 
 
@@ -253,3 +257,25 @@ clean: clean-heap-test
 
 clean-heap-test:
 >rm -rf build/tests/heap
+
+
+# Phase 2/3 ELF64 and process metadata host tests
+HOST_PHASE23_TEST_DIR := build/tests/phase2-phase3
+HOST_ELF64_TEST := $(HOST_PHASE23_TEST_DIR)/elf64-test
+HOST_PROCESS_TEST := $(HOST_PHASE23_TEST_DIR)/process-test
+
+.PHONY: test-elf64 test-process
+test-elf64: $(HOST_ELF64_TEST)
+>./$(HOST_ELF64_TEST)
+
+test-process: $(HOST_PROCESS_TEST)
+>./$(HOST_PROCESS_TEST)
+
+$(HOST_PHASE23_TEST_DIR):
+>mkdir -p $@
+
+$(HOST_ELF64_TEST): tests/exec/elf64_test.c exec/elf/elf64.c include/qmjy/elf64.h | $(HOST_PHASE23_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ tests/exec/elf64_test.c exec/elf/elf64.c
+
+$(HOST_PROCESS_TEST): tests/kernel/process_test.c kernel/core/process.c include/qmjy/process.h | $(HOST_PHASE23_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ tests/kernel/process_test.c kernel/core/process.c

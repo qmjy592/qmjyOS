@@ -12,7 +12,8 @@ BACKUP="markdown-backup/report-final-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP"
 cp -p "$REPORT" "$BACKUP/"
 
-TMP="$(mktemp)"
+TMP="$BACKUP/report-update.tmp"
+[ ! -e "$TMP" ] || { echo "[ERROR] Temporary evidence path already exists: $TMP" >&2; exit 1; }
 
 cat > "$TMP" <<'REPORT_CONTENT'
 ## QEMU 实际运行验收补充（2026-11-10）

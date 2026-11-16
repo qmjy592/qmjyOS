@@ -1,7 +1,7 @@
 #include "serial.h"
 #include <stdint.h>
 
-const char *exception_messages[] = {
+static const char *exception_messages[] = {
     "Division Error", "Debug", "Non-maskable Interrupt", "Breakpoint",
     "Overflow", "Bound Range Exceeded", "Invalid Opcode", "Device Not Available",
     "Double Fault", "Coprocessor Segment Overrun", "Invalid TSS", "Segment Not Present",
@@ -12,37 +12,52 @@ const char *exception_messages[] = {
     "Hypervisor Injection Exception", "VMM Communication Exception", "Security Exception", "Reserved"
 };
 
-void print_hex(uint64_t val) {
-    char buf[19];
-    buf[0] = '0'; buf[1] = 'x';
-    for (int i = 0; i < 16; i++) {
-        uint8_t nibble = (val >> (60 - i * 4)) & 0xF;
-        buf[2 + i] = nibble < 10 ? '0' + nibble : 'A' + nibble - 10;
-    }
-    buf[18] = '\0';
-    serial_puts(buf);
+static void panic_putc(char value)
+{
+    __asm__ volatile("outb %0, %1" :: "a"((uint8_t)value), "Nd"((uint16_t)0xE9));
+    if (serial_is_initialized())
+        serial_putc(value);
 }
 
-void exception_handler(uint64_t int_no, uint64_t err_code, uint64_t rip) {
-    serial_puts("\n\n!!! KERNEL PANIC !!!\n");
-    serial_puts("Exception: ");
-    if (int_no < 32) {
-        serial_puts(exception_messages[int_no]);
-    } else {
-        serial_puts("Unknown");
+static void panic_puts(const char *text)
+{
+    while (*text) {
+        if (*text == '\n')
+            panic_putc('\r');
+        panic_putc(*text++);
     }
-    serial_puts("\nError Code: ");
-    print_hex(err_code);
-    serial_puts("\nRIP: ");
-    print_hex(rip);
+}
+
+static void panic_hex(uint64_t value)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    unsigned int i;
+    panic_putc('0');
+    panic_putc('x');
+    for (i = 0; i < 16; ++i)
+        panic_putc(digits[(value >> (60U - i * 4U)) & 0x0FU]);
+}
+
+void exception_handler(uint64_t int_no, uint64_t err_code,
+                       uint64_t rip, uint64_t cs, uint64_t rflags)
+{
+    uint64_t cr2 = 0;
+    panic_puts("\n\n!!! KERNEL PANIC !!!\nException: ");
+    if (int_no < 32)
+        panic_puts(exception_messages[int_no]);
+    else
+        panic_puts("Unknown");
+    panic_puts("\nVector: ");     panic_hex(int_no);
+    panic_puts("\nError Code: "); panic_hex(err_code);
+    panic_puts("\nRIP: ");        panic_hex(rip);
+    panic_puts("\nCS: ");         panic_hex(cs);
+    panic_puts("\nRFLAGS: ");     panic_hex(rflags);
     if (int_no == 14) {
-        uint64_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-        serial_puts("\nCR2: ");
-        print_hex(cr2);
+        panic_puts("\nCR2: ");
+        panic_hex(cr2);
     }
-    serial_puts("\n\nSystem Halted.\n");
-    while (1) {
-        __asm__ volatile("cli; hlt");
-    }
+    panic_puts("\n\nSystem Halted.\n");
+    for (;;)
+        __asm__ volatile("cli; hlt" ::: "memory");
 }

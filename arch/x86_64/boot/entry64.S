@@ -4,6 +4,7 @@
 
 .extern __bss_start
 .extern __bss_end
+.extern idt_init_with_selector
 
 _start64:
     # Preserve the 32-bit Multiboot arguments.
@@ -83,6 +84,11 @@ _start64:
     movw $0x00e9, %dx
     movb $'D', %al
     outb %al, %dx
+
+    # .bss is clear; install exception gates before entering C main.
+    # The active Multiboot long-mode code selector is 0x08.
+    mov $0x08, %edi
+    call idt_init_with_selector
 
     # Restore arguments and call main(magic, info_addr).
     mov %r12d, %edi

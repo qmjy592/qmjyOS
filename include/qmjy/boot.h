@@ -90,6 +90,31 @@ typedef struct qm_boot_info {
     qm_u64_t reserved[8];
 } qm_boot_info_t;
 
+#define QM_BOOT_MULTIBOOT_V1_MAGIC 0x2BADB002U
+#define QM_BOOT_MAX_MEMORY_REGIONS 128U
+
 qm_status_t qm_boot_validate_info(const qm_boot_info_t *info);
+
+/*
+ * Compatibility adapter for the current x86_64 BIOS Multiboot v1 bootstrap.
+ * Views may be host pointers while their corresponding physical addresses
+ * remain explicit; the kernel caller supplies identity-mapped views.
+ * Multiboot modules are rejected until a module descriptor array is copied.
+ */
+qm_status_t qm_boot_info_from_multiboot_v1(
+    qm_u32_t multiboot_magic,
+    const void *multiboot_info_view,
+    qm_u64_t multiboot_info_physical,
+    const void *memory_map_view,
+    qm_u64_t memory_map_physical,
+    qm_boot_memory_region_t *region_storage,
+    qm_u64_t region_storage_physical,
+    qm_u32_t region_capacity,
+    qm_u64_t kernel_physical_base,
+    qm_u64_t kernel_physical_size,
+    qm_u64_t kernel_virtual_base,
+    qm_u64_t kernel_entry_virtual,
+    qm_boot_info_t *out_info
+);
 
 #endif

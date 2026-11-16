@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG_FILE="${TMPDIR:-/tmp}/qmjyos-qemu-boot-$$.log"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$ROOT_DIR"
+EVIDENCE_DIR="${QMJYOS_QEMU_EVIDENCE_DIR:-build/test-evidence/qemu-boot}"
+RUN_ID="${QMJYOS_QEMU_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
+LOG_FILE="$EVIDENCE_DIR/serial-$RUN_ID.log"
 TIMEOUT_SECONDS=20
 
 fail() {
@@ -11,11 +15,15 @@ fail() {
         cat "$LOG_FILE" >&2
         echo "------------------------------" >&2
     fi
-    rm -f "$LOG_FILE"
+    echo "[QEMU BOOT] Evidence retained at: $LOG_FILE" >&2
     exit 1
 }
 
-trap 'rm -f "$LOG_FILE"' EXIT
+case "$RUN_ID" in
+    ""|*[!A-Za-z0-9._-]*) fail "Invalid QMJYOS_QEMU_RUN_ID" ;;
+esac
+mkdir -p "$EVIDENCE_DIR" || fail "Cannot create evidence directory: $EVIDENCE_DIR"
+[ ! -e "$LOG_FILE" ] || fail "Evidence log already exists; refusing to overwrite it"
 
 for file in kernel.elf kernel64.elf kernel64.bin; do
     [ -s "$file" ] || fail "$file does not exist or is empty"
@@ -87,3 +95,4 @@ require_log "[task B] running"
 
 echo "[QEMU BOOT PASS] Kernel remained alive for ${TIMEOUT_SECONDS}s."
 echo "[QEMU BOOT PASS] BIOS boot, Ring 3 test and two-task scheduling verified."
+echo "[QEMU BOOT] Runtime evidence retained: $LOG_FILE"
