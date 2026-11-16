@@ -280,3 +280,91 @@ The current `main` sequence is important because it describes the actual integra
 | Ring 3 | Least privileged x86 execution level / x86 最低特权级 |
 | Cooperative scheduling | Tasks yield explicitly / 任务主动让出 CPU 的调度方式 |
 | Preemptive scheduling | Kernel can interrupt a running task and switch it / 内核可中断运行任务并切换的调度方式 |
+
+<!-- QMjyOS-DOCS-CI-14 -->
+
+## Architecture Status and Implementation Boundaries
+
+### 中文
+
+当前架构状态应区分基础实现、实验性实现和计划实现。
+
+**已经具备基础实现或测试证据的部分：**
+
+- x86_64 BIOS 构建与启动路径。
+- GDT/TSS/IDT 基础。
+- 内存管理和分页基础。
+- VFS/RAMFS 基础。
+- Ring 3 基础特权级转换。
+- Ring 0 协作式调度。
+- QBuild v0.5.0。
+- 主机端 ASan/UBSan 测试。
+
+**仍需继续完成或验收的部分：**
+
+- 完整的用户空间地址隔离。
+- 完整的进程与线程管理。
+- 抢占式任务调度。
+- 稳定的系统调用 ABI。
+- 完整的 QBoot 启动管理器。
+- x86_64 UEFI 启动支持。
+- AArch64 平台支持。
+- 完整桌面环境及基础应用。
+- 安装器和恢复环境。
+- 全流程中英文语言切换。
+
+### 调度和进程模型
+
+当前双任务测试证明协作式任务可以交替执行，
+不能据此宣称抢占式调度已完成。
+
+进程 metadata registry 只提供进程元数据管理基础，
+不代表已经实现完整 CR3 切换、独立地址空间、
+进程隔离和完整生命周期管理。
+
+### 用户态模型
+
+Ring 3 基础转换测试证明 CPU 特权级转换路径可运行。
+完整用户空间隔离、系统调用 ABI 和进程级资源保护
+仍需要独立实现和测试。
+
+### 启动模型
+
+当前 x86_64 BIOS 启动路径是开发 bootstrap。
+正式产品需要完成自研 QBoot，并独立验收 BIOS/UEFI
+启动链路。不能将现有 bootstrap 描述为完整 QBoot。
+
+### 桌面与应用模型
+
+QDesktop、QWindow、QGraphics、QTheme、QIcon、
+QDock、QStatus、QStart，以及文件管理器、设置、
+终端和基础系统应用，在没有实际实现和测试之前
+均应标记为计划或开发中。
+
+### English
+
+Architecture documentation distinguishes foundational,
+experimental, and planned implementations.
+
+Implemented foundations include the x86_64 BIOS build path,
+GDT/TSS/IDT, memory-management foundations, VFS/RAMFS,
+a basic Ring 3 transition test, cooperative Ring 0 scheduling,
+QBuild v0.5.0, and host ASan/UBSan testing.
+
+Outstanding work includes full user-space isolation,
+complete process/thread management, preemptive scheduling,
+a stable syscall ABI, a complete self-developed QBoot,
+UEFI and AArch64 support, the desktop environment,
+basic applications, installer, recovery, and end-to-end
+Chinese/English localization.
+
+A cooperative scheduler test is not evidence of preemptive
+scheduling. A process metadata registry is not a complete
+process/address-space implementation. A Ring 3 transition
+test is not proof of complete isolation.
+
+The current BIOS bootstrap must not be described as a
+completed QBoot product.
+
+Desktop components and applications remain planned until
+their implementation and acceptance tests are available.

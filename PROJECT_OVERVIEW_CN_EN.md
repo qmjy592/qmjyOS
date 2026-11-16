@@ -144,3 +144,72 @@ The processor begins at the Multiboot 32-bit entry. The bootstrap copies the emb
 qmjyOS is not currently a general-purpose OS, secure sandbox, hypervisor, or production kernel. It does not yet provide a complete userspace, filesystem, process model, device-driver ecosystem, networking stack, or robust recovery from kernel faults.
 
 qmjyOS 当前还不是通用操作系统、安全沙箱、虚拟机监控程序或生产级内核。它尚未提供完整用户空间、文件系统、进程模型、设备驱动生态、网络协议栈或可靠的内核故障恢复机制。
+
+<!-- QMjyOS-DOCS-CI-14 -->
+
+## Development Status Update — 2026-11-16
+
+### 中文：当前工程状态
+
+当前已验证的开发基线：
+
+- x86_64 BIOS 构建路径。
+- 基础内核启动和串口输出。
+- GDT、TSS、IDT 等 CPU 初始化基础。
+- 物理内存管理、分页和堆管理基础组件。
+- RAMFS/VFS 基础组件。
+- 基础 Ring 3 特权级转换测试。
+- Ring 0 协作式双任务调度测试。
+- QBuild v0.5.0 构建与测试流程。
+
+功能边界：
+
+1. 当前 Ring 0 调度器是协作式调度，不是抢占式调度。
+2. 当前进程模块的 metadata registry 不等于完整进程管理器。
+3. 当前 Ring 3 测试不等于完整用户地址空间隔离。
+4. ELF64 加载相关代码不等于完整、独立的进程地址空间。
+5. 当前 BIOS 启动链仍属于开发阶段 bootstrap，
+   不能等同于完整 QBoot 产品。
+6. QBuild 已具备模块和构建管理能力，但底层仍依赖
+   Makefile 构建流程。
+
+### CI 状态
+
+本地已通过源码语法、QBuild 构建、ELF 布局、
+QBuild 测试、ASan/UBSan 主机测试和 git diff 检查。
+
+Termux 不支持 LeakSanitizer，本地没有完成内存泄漏检测。
+
+GitHub Actions Run #14：
+https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
+
+最终 CI 状态需要以该运行记录为准。
+
+### English: Current Engineering Status
+
+The current verified development baseline includes:
+
+- x86_64 BIOS build support.
+- Basic kernel boot and serial output.
+- GDT, TSS, and IDT initialization foundations.
+- Physical memory, paging, and heap foundations.
+- Basic RAMFS/VFS components.
+- A basic Ring 3 privilege-transition test.
+- A cooperative Ring 0 two-task scheduler test.
+- QBuild v0.5.0 build and test workflows.
+
+Important limitations:
+
+1. The current scheduler is cooperative, not preemptive.
+2. The process metadata registry is not a complete process manager.
+3. The Ring 3 test does not prove complete user-space isolation.
+4. ELF64 loading support does not prove independent process address spaces.
+5. The current BIOS boot path is a development bootstrap,
+   not a completed QBoot product.
+6. QBuild still relies on Makefile-based underlying build rules.
+
+Local checks passed for source syntax, QBuild build, ELF layout,
+QBuild tests, ASan/UBSan host tests, and git diff validation.
+
+LeakSanitizer is unsupported in the current Termux environment.
+The final status of CI Run #14 must be checked separately.

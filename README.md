@@ -275,3 +275,84 @@ See [SYSTEM_LAYOUT.md](docs/architecture/SYSTEM_LAYOUT.md) for directory respons
 No license has been selected. All rights are reserved by default until a license is added. Do not assume redistribution or reuse is permitted. qmjyOS is experimental and must not be used to protect sensitive data.
 
 项目尚未选择许可证。在正式添加许可证之前，默认保留所有权利。请勿自行假定允许再分发或复用。qmjyOS 属于实验性项目，不应用于保护敏感数据。
+
+<!-- QMjyOS-DOCS-CI-14 -->
+
+## 2026-11-16 Development and CI Status
+
+### 中文
+
+当前开发目标：在 2026-11-28 前完成 qmjyOS 0.1.0 的可验证发布版本。
+
+本轮新增 CI 检查范围：
+
+- Shell 和 Python 源码语法检查。
+- QBuild 构建与配置检查。
+- 不支持的平台目标拒绝检查。
+- ELF32/ELF64 文件布局检查。
+- AddressSanitizer 和 UndefinedBehaviorSanitizer 主机测试。
+- QFS 主机测试及崩溃一致性测试。
+- x86_64 BIOS 环境下的 QEMU 启动测试。
+
+本地已确认通过：
+
+- 源码语法检查。
+- x86_64 BIOS QBuild 完整构建。
+- ELF 布局检查。
+- QBuild 测试套件。
+- ASan/UBSan 主机测试。
+- git diff --check。
+
+注意：Termux 环境不支持 LeakSanitizer，因此本轮使用
+detect_leaks=0。AddressSanitizer 和 UBSan 测试通过，
+不代表内存泄漏检测已经通过。
+
+GitHub Actions Run #14：
+
+- Commit: 32cee5272d22385c0ac3fca8fee81b5a556585cc
+- Run ID: 43826588727
+- URL: https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
+- 最后记录的状态：代码与 QBuild 验证 Job 已通过；
+  x86_64 BIOS 构建与 QEMU 测试 Job 当时仍在运行。
+- 最终状态必须以 GitHub Actions 实际结果为准。
+
+### English
+
+The current target is a verifiable qmjyOS 0.1.0 release
+by November 28, 2026.
+
+New CI coverage includes source syntax checks, QBuild
+validation, unsupported-target rejection, ELF layout
+verification, ASan/UBSan host tests, QFS tests, and
+x86_64 BIOS QEMU boot validation.
+
+Local checks passed for source syntax, QBuild build,
+ELF layout, QBuild tests, ASan/UBSan host tests, and
+git diff --check.
+
+LeakSanitizer is disabled on the current Termux
+environment. Memory leak detection is therefore
+not verified.
+
+GitHub Actions Run #14:
+- Commit: 32cee5272d22385c0ac3fca8fee81b5a556585cc
+- Run ID: 43826588727
+- URL: https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
+
+The recorded status was partial success, not a confirmed
+complete CI pass. Check the live workflow result before
+claiming completion.
+
+### 0.1.0 Release Scope
+
+The intended release scope includes:
+
+- Kernel foundation and hardware initialization.
+- Self-developed QBoot boot manager.
+- Desktop environment and basic applications.
+- Installer and recovery environment.
+- Chinese and international English editions.
+
+A planned component must not be described as implemented.
+Every release component needs implementation evidence and
+acceptance tests. Update this document when its status changes.

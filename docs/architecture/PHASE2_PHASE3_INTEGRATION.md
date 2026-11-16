@@ -52,3 +52,81 @@ make -j2 all
 ```
 
 The final command includes the existing QBoot BIOS, QFS IDE and other tests. The BIOS disk boot and `tools/qemu_boot_test.sh` serial/debugcon evidence is retained under `build/test-evidence/` (QFS IDE evidence remains under its existing `build/phase12-unified/` run directory). These paths avoid `/tmp`/`TMPDIR` and are compatible with the project's Termux constraint. Each run uses a unique ID and refuses to overwrite existing logs. These tests require the relevant Termux tools/QEMU and must be reported from their real output. This package itself does not claim a QEMU run.
+
+<!-- QMjyOS-PHASE2-PHASE3-STATUS-UPDATE-2026-11-16 -->
+
+## Phase 2 / Phase 3 Status Clarification — 2026-11-16
+
+### 中文：实现边界
+
+本节用于明确阶段集成进度，避免将基础组件、
+实验性路径和完整产品能力混为一谈。
+
+**启动与内存：**
+
+- 当前 x86_64 BIOS 启动路径已有构建和启动测试基础。
+- Multiboot 启动信息处理与物理内存初始化需要分别验收。
+- ELF64 加载相关功能不能自动等同于完整独立地址空间。
+- 页面权限、用户页映射和进程级 CR3 隔离必须单独验证。
+
+**任务和进程：**
+
+- 当前 Ring 0 双任务交替测试属于协作式调度。
+- 抢占式调度仍需要单独实现和测试。
+- 进程 metadata registry 不能代替完整进程管理。
+- 独立地址空间、进程切换、线程生命周期和资源回收
+  均需要独立验收。
+
+**Ring 3：**
+
+- 基础 CPL3 到 CPL0 特权级转换测试已有记录。
+- 完整用户空间隔离和稳定 syscall ABI 仍需继续完成。
+- 不应将一次特权级转换测试描述为完整用户态环境。
+
+**文件系统：**
+
+- QFS 的主机端测试和崩溃一致性检查应以实际测试结果为准。
+- 持久化、日志、恢复和崩溃重放功能必须分别有实现证据。
+- 不应仅凭构建成功推断所有断电恢复场景均可靠。
+
+### CI 扩展记录
+
+本轮新增源码语法、ELF 布局、不支持目标拒绝、
+ASan/UBSan、QFS 和 QEMU 检查。
+
+本地已通过的检查包括源码语法、QBuild 构建、
+ELF 布局、QBuild 测试、ASan/UBSan 和
+git diff --check。
+
+Termux 不支持 LeakSanitizer，内存泄漏检测未完成。
+
+Run #14：
+https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
+
+最终 CI 状态需要独立核实。
+
+### English: Integration Boundaries
+
+This section separates foundational components,
+experimental paths, and complete product capabilities.
+
+The current x86_64 BIOS path has build and boot-test
+foundations. Multiboot information handling and physical
+memory initialization require separate verification.
+ELF64 loading support does not automatically provide
+independent process address spaces.
+
+The Ring 0 two-task test demonstrates cooperative scheduling,
+not preemptive scheduling. The process metadata registry
+is not a complete process manager.
+
+A basic CPL3-to-CPL0 transition test does not establish
+complete user-space isolation or a stable syscall ABI.
+
+QFS persistence, logging, recovery, and crash replay must
+each be supported by implementation and test evidence.
+A successful build alone does not prove power-loss safety.
+
+The expanded CI includes source syntax, ELF layout,
+unsupported target rejection, ASan/UBSan, QFS, and QEMU.
+The final Run #14 result must be verified independently.

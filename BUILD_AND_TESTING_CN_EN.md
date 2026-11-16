@@ -150,3 +150,88 @@ Do not enable Ring 3 simply by changing a page-table flag. User access depends o
 This project is experimental. Do not use it as a secure operating system or to store sensitive data.
 
 本项目仍属实验性质，不要将其作为安全操作系统使用，也不要用来存储敏感数据。
+
+<!-- QMjyOS-CI-EXPANSION-2026-11-16 -->
+
+## CI Expansion — 2026-11-16
+
+### 新增检查项目
+
+| 检查项目 | 检查内容 |
+|---|---|
+| Source syntax | Shell/Python 语法检查 |
+| Unsupported targets | 不支持的架构/启动组合必须被拒绝 |
+| ELF layout | ELF32/ELF64 class、架构、入口和 LOAD 段 |
+| QBuild | 配置、构建、模块及测试 |
+| ASan/UBSan | 主机端地址和未定义行为检查 |
+| QFS | 主机测试和崩溃一致性测试 |
+| QEMU | x86_64 BIOS 实际启动检查 |
+
+### 本地执行命令
+
+```bash
+cd "$HOME/qmjyOS" || exit 1
+
+bash tools/ci/check_sources.sh
+
+./qbuild build --arch x86_64 --boot bios --jobs 4
+
+bash tools/ci/verify_elf_layout.sh
+
+./qbuild test --arch x86_64 --boot bios
+
+bash tools/ci/run_host_sanitizers.sh
+
+git diff --check
+```
+
+### 本地验证记录
+
+用户已确认以上本地检查全部通过。
+
+特别说明：
+
+Termux 当前环境不支持 LeakSanitizer 的
+detect_leaks 功能，因此 sanitizer 使用
+detect_leaks=0。
+
+ASan/UBSan 检查通过不代表 LeakSanitizer 检查通过，
+也不能宣称已经完成全面内存泄漏检测。
+
+### GitHub Actions Run #14
+
+- Commit: 32cee5272d22385c0ac3fca8fee81b5a556585cc
+- Run ID: 43826588727
+- URL: https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
+
+本轮需要重点核实：
+
+1. Code and QBuild validation。
+2. 完整 x86_64 BIOS 构建。
+3. ELF layout。
+4. QBuild test suite。
+5. ASan/UBSan。
+6. QFS host/crash consistency。
+7. 实际 QEMU BIOS boot。
+8. 构建产物上传。
+
+在没有读取最终 workflow 结果之前，
+不得把 Run #14 记为全部通过。
+
+### English
+
+The expanded CI pipeline covers source syntax, unsupported
+target rejection, ELF layout, QBuild, ASan/UBSan, QFS host
+and crash-consistency tests, and actual x86_64 BIOS QEMU boot.
+
+Local checks have passed.
+
+LeakSanitizer is disabled because the current Termux
+environment does not support detect_leaks. Memory leak
+detection remains unverified.
+
+GitHub Actions Run #14 must be checked for its final result:
+https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
+
+Do not report the workflow as fully passing until every
+required job and step has completed successfully.
