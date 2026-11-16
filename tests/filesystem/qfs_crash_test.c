@@ -256,7 +256,7 @@ static int exercise_failpoints(enum operation op, const char *label)
         io_count = 0;
         if (op == OP_FORMAT) {
             fail_at = point;
-            (void)qfs_format(&partition);
+            status = qfs_format(&partition);
         } else {
             REQUIRE(qfs_mount(&partition) == VFS_OK,
                     "baseline must mount before injected operation");
