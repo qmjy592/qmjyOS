@@ -16,6 +16,7 @@ qm_status_t qm_boot_validate_info(const qm_boot_info_t *info)
 {
     uint64_t map_bytes;
     uint64_t module_bytes;
+    uint64_t kernel_virtual_end;
 
     if (info == NULL)
         return QM_ERR_INVALID;
@@ -63,9 +64,19 @@ qm_status_t qm_boot_validate_info(const qm_boot_info_t *info)
     }
 
     if (info->kernel_physical_size == 0 ||
-        range_overflows(info->kernel_physical_base,
-                        info->kernel_physical_size) ||
         info->kernel_entry_virtual == 0)
+        return QM_ERR_CORRUPT;
+
+    if (range_overflows(info->kernel_physical_base,
+                        info->kernel_physical_size) ||
+        range_overflows(info->kernel_virtual_base,
+                        info->kernel_physical_size))
+        return QM_ERR_OVERFLOW;
+
+    kernel_virtual_end = info->kernel_virtual_base +
+                         info->kernel_physical_size;
+    if (info->kernel_entry_virtual < info->kernel_virtual_base ||
+        info->kernel_entry_virtual >= kernel_virtual_end)
         return QM_ERR_CORRUPT;
 
     if ((info->framebuffer.physical_address == 0) !=

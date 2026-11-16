@@ -179,6 +179,38 @@ int main(void)
           VFS_ERR_NOT_SUPPORTED,
           "unsupported create operation returns explicit error");
 
+    {
+        static struct vfs_node cycle_outer = {
+            .name = "cycle-outer", .type = VFS_NODE_DIRECTORY
+        };
+        static struct vfs_node cycle_inner = {
+            .name = "cycle-inner", .type = VFS_NODE_DIRECTORY
+        };
+        static struct vfs_node mount_root = {
+            .name = "mount-root", .type = VFS_NODE_DIRECTORY
+        };
+        static struct vfs_node mount_child = {
+            .name = "mount-child", .type = VFS_NODE_DIRECTORY
+        };
+        static struct vfs_node independent_mountpoint = {
+            .name = "independent-mount", .type = VFS_NODE_DIRECTORY
+        };
+
+        CHECK(vfs_add_child(&cycle_outer, &cycle_inner) == VFS_OK,
+              "detached subtree can be assembled");
+        CHECK(vfs_add_child(&cycle_inner, &cycle_outer) == VFS_ERR_INVALID,
+              "ancestor cannot be attached below its descendant");
+
+        CHECK(vfs_add_child(&mount_root, &mount_child) == VFS_OK,
+              "detached mount tree can be assembled");
+        CHECK(vfs_mount("ramfs", &mount_child, &mount_root) == VFS_ERR_INVALID,
+              "mounting a root below its own descendant is rejected");
+        CHECK(vfs_mount("ramfs", &independent_mountpoint, &mount_root) == VFS_OK,
+              "detached filesystem root can be mounted once");
+        CHECK(vfs_mount("ramfs", &mnt, &mount_root) == VFS_ERR_BUSY,
+              "already attached filesystem root cannot be mounted twice");
+    }
+
     printf("VFS HOST TESTS PASSED\n");
     return 0;
 }

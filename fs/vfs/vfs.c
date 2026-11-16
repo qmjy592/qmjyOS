@@ -2,6 +2,26 @@
 
 static struct vfs_node *vfs_root_node;
 
+#define VFS_MAX_PARENT_DEPTH 256U
+
+/* Return true for a cycle or an untrusted/corrupt parent chain. */
+static int parent_chain_contains(const struct vfs_node *node,
+                                 const struct vfs_node *candidate)
+{
+    size_t depth = 0;
+
+    while (node != NULL) {
+        if (node == candidate)
+            return 1;
+        if (node->parent == NULL || node->parent == node)
+            return 0;
+        node = node->parent;
+        if (++depth >= VFS_MAX_PARENT_DEPTH)
+            return 1;
+    }
+    return 0;
+}
+
 static const struct vfs_filesystem *registered_filesystems[VFS_MAX_FILESYSTEMS];
 static size_t registered_filesystem_count;
 
@@ -130,6 +150,10 @@ int vfs_add_child(struct vfs_node *directory,
         child->parent != NULL || child->next != NULL)
         return VFS_ERR_INVALID;
 
+    /* A detached subtree must never be attached below one of its descendants. */
+    if (parent_chain_contains(directory, child))
+        return VFS_ERR_INVALID;
+
     for (current = directory->children;
          current != NULL;
          current = current->next) {
@@ -167,8 +191,18 @@ int vfs_mount(const char *filesystem_name,
         return VFS_ERR_NOT_DIRECTORY;
 
     if (mountpoint->mounted_root != NULL ||
-        filesystem_root == vfs_root_node)
+        filesystem_root == vfs_root_node ||
+        filesystem_root == mountpoint)
         return VFS_ERR_BUSY;
+
+    /* A filesystem root may be detached or self-rooted, but not already
+     * attached elsewhere. Mounting it below one of its own descendants
+     * would create a parent/mount cycle and is rejected. */
+    if (filesystem_root->parent != NULL &&
+        filesystem_root->parent != filesystem_root)
+        return VFS_ERR_BUSY;
+    if (parent_chain_contains(mountpoint, filesystem_root))
+        return VFS_ERR_INVALID;
 
     mountpoint->mounted_root = filesystem_root;
     filesystem_root->parent = mountpoint;

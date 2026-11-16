@@ -6,6 +6,8 @@ HOST_CC ?= clang
 HOST_TEST_CFLAGS ?= -std=c11 -Wall -Wextra -Werror
 
 HOST_MEMORY_TEST := .memory-host-test
+HOST_MEMORY_OVERLAP_TEST := build/tests/memory/memory_overlap_test
+HOST_MEMORY_BOOT_INFO_TEST := build/tests/memory/memory_boot_info_test
 HOST_PAGING_TEST := .paging-host-test
 HOST_VFS_TEST := .vfs-host-test
 HOST_RAMFS_TEST := .ramfs-host-test
@@ -83,12 +85,23 @@ clean:
 	rm -f $(MODULE_MK)
 	rm -rf build/qboot
 	rm -rf build/tests/kernel-foundation
+	rm -rf build/tests/memory
 
-test-memory: $(HOST_MEMORY_TEST)
+test-memory: $(HOST_MEMORY_TEST) $(HOST_MEMORY_OVERLAP_TEST) $(HOST_MEMORY_BOOT_INFO_TEST)
 	./$(HOST_MEMORY_TEST)
+	./$(HOST_MEMORY_OVERLAP_TEST)
+	./$(HOST_MEMORY_BOOT_INFO_TEST)
 
-$(HOST_MEMORY_TEST): tests/memory_host_test.c mm/physical/memory.c mm/physical/memory.h
-	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Imm/physical -o $@ tests/memory_host_test.c mm/physical/memory.c
+$(HOST_MEMORY_TEST): tests/memory_host_test.c mm/physical/memory.c mm/physical/memory.h kernel/core/boot_info.c
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Iinclude -Imm/physical -o $@ tests/memory_host_test.c mm/physical/memory.c kernel/core/boot_info.c
+
+$(HOST_MEMORY_OVERLAP_TEST): tests/memory_overlap_test.c mm/physical/memory.c mm/physical/memory.h kernel/core/boot_info.c
+	mkdir -p build/tests/memory
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Iinclude -Imm/physical -o $@ tests/memory_overlap_test.c mm/physical/memory.c kernel/core/boot_info.c
+
+$(HOST_MEMORY_BOOT_INFO_TEST): tests/memory_boot_info_test.c mm/physical/memory.c mm/physical/memory.h kernel/core/boot_info.c
+	mkdir -p build/tests/memory
+	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Iinclude -Imm/physical -o $@ tests/memory_boot_info_test.c mm/physical/memory.c kernel/core/boot_info.c
 
 test-paging: $(HOST_PAGING_TEST)
 	./$(HOST_PAGING_TEST)
@@ -121,6 +134,7 @@ clean-memory-test:
 
 test-boot: kernel.elf kernel64.elf kernel64.bin qboot-bios
 	python3 tests/boot/test_bios_nxe.py
+	python3 tests/boot/test_qboot_gdt.py
 	bash tools/verify_boot.sh
 	bash tools/qboot/test_bios_boot.sh
 
@@ -279,3 +293,10 @@ $(HOST_ELF64_TEST): tests/exec/elf64_test.c exec/elf/elf64.c include/qmjy/elf64.
 
 $(HOST_PROCESS_TEST): tests/kernel/process_test.c kernel/core/process.c include/qmjy/process.h | $(HOST_PHASE23_TEST_DIR)
 >$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ tests/kernel/process_test.c kernel/core/process.c
+
+
+# QBUILD-1.0.0-SELFTEST-TARGET
+.RECIPEPREFIX := >
+.PHONY: test-qbuild
+test-qbuild:
+>python3 tests/qbuild/test_qbuild_core.py

@@ -46,7 +46,7 @@ _start:
     orl $1, %eax
     movl %eax, %cr0
 
-    ljmpl $0x08, $protected_entry
+    ljmpl $0x18, $protected_entry
 
 puts16:
     movw $0x00e9, %dx
@@ -277,7 +277,7 @@ protected_entry:
     orl $0x80010000, %eax
     movl %eax, %cr0
 
-    ljmp $0x18, $long_mode_entry
+    ljmp $0x08, $long_mode_entry
 
 no_long_mode:
     movw $0x00e9, %dx
@@ -336,9 +336,9 @@ long_mode_entry:
 
 gdt:
     .quad 0
-    .quad 0x00CF9A000000FFFF
-    .quad 0x00CF92000000FFFF
-    .quad 0x00AF9A000000FFFF
+    .quad 0x00AF9A000000FFFF  # 0x08: 64-bit kernel code
+    .quad 0x00CF92000000FFFF  # 0x10: data
+    .quad 0x00CF9A000000FFFF  # 0x18: 32-bit protected-mode code
 
 gdt_end:
 

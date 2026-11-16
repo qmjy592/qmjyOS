@@ -1,128 +1,86 @@
-# QBuild
+# QBuild 1.0.0
 
-qmjyOS 统一构建入口。
+qmjyOS 统一构建与工程管理入口。QBuild 1.0.0 在保留 v0.5.0 命令和 Makefile 执行基础的同时，增加安全模块配置管理、可校验配置快照、可追溯构建/测试报告、环境诊断和自身回归测试。
 
-当前版本：0.5.0
+QBuild 版本与 qmjyOS 操作系统版本独立。QBuild 1.0.0 不代表 qmjyOS 已发布 1.0.0；当前内核支持目标仍是 x86_64 + BIOS。
 
-QBuild 当前负责读取模块配置、检查模块依赖与状态、生成模块构建计划，
-并调用项目现有 Makefile 完成构建和测试。
+## 要求与边界
 
-## 当前支持目标
-
-- x86_64 + BIOS
-
-## 尚未实现的目标
-
-- x86_64 + UEFI
-- ARM64 启动与构建
+- Python 3.10+、Make、Clang、LLD 和 llvm-objcopy。
+- 当前支持：`x86_64 + bios`。
+- `x86_64 + uefi` 与 `aarch64` 仍明确拒绝。
+- Makefile 继续执行实际编译、链接和原有测试目标。
+- 不提供动态内核模块加载器，也不宣称 QTest 运行时已完成。
+- 模块成熟度仍由 `config/modules.status` 的 `planned`、`experimental`、`implemented` 表示；QBuild 不会因构建成功自动提升模块状态。
 
 ## 常用命令
 
-在项目根目录执行：
+```sh
+./qbuild --version
+./qbuild help
+./qbuild info
+./qbuild doctor
+./qbuild config
+./qbuild modules
+./qbuild deps
+./qbuild plan
+./qbuild build --arch x86_64 --boot bios --jobs 2
+./qbuild build --module FS_VFS --arch x86_64 --boot bios
+./qbuild test --arch x86_64 --boot bios --jobs 2
+./qbuild self-test
+./qbuild report list
+./qbuild clean
+```
 
-    ./tools/qbuild/qbuild help
-    ./tools/qbuild/qbuild info
-    ./tools/qbuild/qbuild config
-    ./tools/qbuild/qbuild modules
-    ./tools/qbuild/qbuild build --arch x86_64 --boot bios
-    ./tools/qbuild/qbuild test
-    ./tools/qbuild/qbuild clean
+旧命令 `info`、`config`、`modules`、`deps`、`plan`、`build`、`test` 和 `clean` 保留。根目录 `./qbuild` 与 `./tools/qbuild/qbuild` 使用同一入口。
 
-并行构建或测试：
+## 模块配置管理
 
-    ./tools/qbuild/qbuild build --arch x86_64 --boot bios --jobs 4
-    ./tools/qbuild/qbuild test --jobs 4
+```sh
+./qbuild module show FS_VFS
+./qbuild module enable SOME_MODULE --with-deps
+./qbuild module disable SOME_MODULE
+./qbuild module disable SOME_MODULE --cascade
+```
 
-也可以通过 QBUILD_JOBS 环境变量设置并行任务数：
+启用模块默认要求其依赖已启用；`--with-deps` 才会递归启用依赖。禁用一个仍被启用模块依赖的模块会被拒绝；`--cascade` 才会连同启用的依赖方一起禁用。每次变更都会先检查配置、依赖图、循环依赖和源码映射，失败则恢复原文件。模块状态文件不会被自动改写。
 
-    QBUILD_JOBS=4 ./tools/qbuild/qbuild test
+## 配置快照与恢复
 
-## 模块管理
+```sh
+./qbuild config snapshot before-storage-work
+./qbuild config snapshots
+./qbuild config restore before-storage-work
+```
 
-QBuild 使用以下配置文件：
+快照保存在 `build/qbuild/snapshots/`（已被 `/build/` 忽略）。每份快照包含 `modules.conf`、`modules.dep`、`modules.status`、SHA-256 清单和创建时间。恢复前会校验清单与配置结构，并自动保存一份恢复前快照；恢复后完整模块检查失败则回滚。
 
-- config/modules.conf：模块配置
-- config/modules.dep：模块依赖关系
-- config/modules.status：模块实现状态
+## 构建/测试报告
 
-当前模块状态只允许：
+`build` 与 `test` 会实时显示子进程输出，同时在 `build/qbuild/reports/` 保存 UTF-8 日志和 JSON 报告。报告记录 QBuild 版本、命令、目标架构、并行度、开始/结束时间、耗时、退出码、Git commit SHA 和工作区是否有未提交变更。
 
-- planned
-- experimental
-- implemented
+```sh
+./qbuild report list
+./qbuild report show REPORT_ID
+```
 
-QBuild 会检查模块配置、依赖关系、循环依赖、模块状态和源码映射，
-并生成模块构建计划。
+报告是本地构建证据，不会自动上传，也不替代 GitHub Actions 结果。失败、被中断和通过会分别记录。
 
-模块状态表示实现成熟度，不代表运行时验证结果。
+## 环境诊断与自测
 
-## 测试
+```sh
+./qbuild doctor
+./qbuild self-test
+```
 
-QBuild 的测试命令会调用项目 Makefile 中的测试目标，包括：
+`doctor` 检查必需工具链和 QBuild 模块配置；QEMU 与 Git 属于可选检查项（`doctor --strict` 会要求可选工具也存在）。`self-test` 使用 Python 标准库测试配置校验、重复项、循环依赖、模块启停依赖约束、级联禁用、快照完整性/恢复、报告 JSON 和旧命令参数兼容性。
 
-- test-memory
-- test-paging
-- test-vfs
-- test-ramfs
-- test-interfaces
-- test-boot
+`qbuild test` 会调用新增的 `test-qbuild` Makefile 目标先运行 QBuild 自身回归测试，再执行原有内核测试目标。Makefile 仍是内核构建和现有 C/汇编测试的执行基础。
 
-公共接口头文件测试也可以单独运行：
+## 报告与数据安全
 
-    make test-interfaces
+快照、报告、日志及测试临时目录都位于 `build/` 下，不进入 Git 提交。配置变更只编辑 `config/modules.conf`，不会自动更改依赖定义或成熟度状态。恢复操作会生成恢复前安全快照。请在提交前检查 `git status --short` 与 `git diff --check`。
 
-该测试使用主机编译器编译公共 qmjyOS 头文件，
-只检查头文件兼容性和声明一致性，不验证接口的运行时实现。
+## 1.0.0 发布门槛
 
-## QTest 状态
-
-当前测试入口由 Makefile 测试目标组成，
-尚不是完整的 QTest 运行时框架。
-
-QTest 的后续实现计划见：
-
-tests/qtest/README.md
-
-## 兼容性
-
-QBuild 当前仍以项目现有 Makefile 作为实际构建执行基础。
-原有 make 命令继续可用。
-
-## 实现边界
-
-当前 QBuild 版本不代表以下功能已经实现：
-
-- 动态内核模块加载
-- 完整的交互式配置系统
-- 独立于现有 Makefile 的完整模块链接系统
-- UEFI 和 ARM64 完整构建链
-
-## QBuild v0.5.0 — Phase 1 verification
-
-QBuild v0.5.0 is the build and module-management baseline for the first
-qmjyOS system-foundation phase.
-
-The verified x86_64 + BIOS workflow includes:
-
-- Configuration and module dependency validation
-- Dependency cycle detection and topological planning
-- Module status inventory validation
-- Source-to-object mapping existence and uniqueness checks
-- Enabled-module dependency validation
-- Full kernel build integration
-- Host-side memory, paging, VFS, and RAMFS tests
-- Public interface header compilation checks
-- Static BIOS boot-image verification
-
-The current module inventory contains 51 modules. Source mappings exist
-for 9 modules. Module status metadata reports 1 implemented, 9 experimental,
-and 41 planned modules.
-
-These status values are metadata, not a claim that every planned module
-has an implementation or that every experimental module is production-ready.
-
-The currently supported build target is x86_64 + BIOS. Other targets must
-remain explicitly unsupported until their toolchains, boot paths, and
-validation workflows are implemented.
-
-Boot static checks do not replace QEMU or physical-hardware runtime tests.
+QBuild 代码版本设为 1.0.0；正式对外发布仍须在目标 Termux 环境完成 `doctor`、`self-test`、完整 `build`、完整 `test`、快照/恢复操作验收、`git diff --check`，并确认新提交的 GitHub Actions CI 全部通过。不能把本地 PASS 写成 GitHub CI PASS。

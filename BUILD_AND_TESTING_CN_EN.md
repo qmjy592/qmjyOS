@@ -235,3 +235,16 @@ https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
 
 Do not report the workflow as fully passing until every
 required job and step has completed successfully.
+
+
+<!-- QBUILD-1.0.0-VALIDATION-2026-11-16 -->
+
+## QBuild 1.0.0 validation / QBuild 1.0.0 验证
+
+QBuild 1.0.0 extends the existing Makefile frontend with safe module configuration changes, hash-verified configuration snapshots and rollback-aware restore, build/test JSON reports, toolchain diagnostics, and a built-in regression suite. Run `./qbuild doctor`, `./qbuild self-test`, and `./qbuild test --arch x86_64 --boot bios --jobs 2`. Build/test logs and reports are stored under the ignored `build/qbuild/reports/`; configuration snapshots are stored under the ignored `build/qbuild/snapshots/`.
+
+QBuild 1.0.0 新增安全模块配置修改、SHA-256 快照与恢复回滚、构建/测试 JSON 报告、工具链诊断和自身回归测试。建议执行 `./qbuild doctor`、`./qbuild self-test`、`./qbuild test --arch x86_64 --boot bios --jobs 2`。构建/测试日志及报告保存在已忽略的 `build/qbuild/reports/`，配置快照保存在已忽略的 `build/qbuild/snapshots/`。
+
+The supported target remains x86_64 + BIOS. A local PASS does not imply GitHub Actions PASS; validate the pushed commit's workflow separately. QBuild 1.0.0 and the qmjyOS system release version are independent.
+
+当前支持目标仍为 x86_64 + BIOS。本地 PASS 不等于 GitHub Actions PASS；推送后必须单独核验对应提交的 CI。QBuild 1.0.0 与 qmjyOS 操作系统发布版本相互独立。

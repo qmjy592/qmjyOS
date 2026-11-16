@@ -86,8 +86,11 @@ _start64:
     outb %al, %dx
 
     # .bss is clear; install exception gates before entering C main.
-    # The active Multiboot long-mode code selector is 0x08.
-    mov $0x08, %edi
+    # Use the selector that actually brought us into 64-bit mode.
+    # Both supported BIOS handoffs standardize this as 0x08, but reading CS
+    # keeps the early IDT correct if another compatible loader uses a peer GDT.
+    xor %edi, %edi
+    movw %cs, %di
     call idt_init_with_selector
 
     # Restore arguments and call main(magic, info_addr).

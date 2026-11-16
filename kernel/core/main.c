@@ -480,6 +480,8 @@ static void storage_init(void)
 /* QM_PHASE2_PHASE3_BOOT_INIT: ordered startup registry integration. */
 static uint32_t g_boot_multiboot_magic;
 static uint32_t g_boot_multiboot_info_addr;
+static uint32_t g_boot_multiboot_mmap_addr;
+static uint32_t g_boot_multiboot_mmap_length;
 static qm_boot_info_t g_kernel_boot_info;
 static qm_boot_memory_region_t g_kernel_memory_regions[QM_BOOT_MAX_MEMORY_REGIONS];
 
@@ -492,10 +494,10 @@ static qm_status_t kernel_init_early(void)
 
 static qm_status_t kernel_init_arch(void)
 {
+    init_gdt_and_tss();
     pic_remap();
     idt_init();
     timer_init(100);
-    init_gdt_and_tss();
     serial_puts("GDT and TSS initialized.\n");
     return QM_OK;
 }
@@ -503,10 +505,10 @@ static qm_status_t kernel_init_arch(void)
 static qm_status_t kernel_init_memory(void)
 {
     int status;
-    status = mm_init_from_multiboot(
-        g_boot_multiboot_magic, g_boot_multiboot_info_addr,
-        (uint64_t)(uintptr_t)&__kernel64_start,
-        (uint64_t)(uintptr_t)&__kernel64_end);
+    status = mm_init_from_boot_info(
+        &g_kernel_boot_info,
+        g_boot_multiboot_info_addr, 88U,
+        g_boot_multiboot_mmap_addr, g_boot_multiboot_mmap_length);
     if (status != MM_OK) {
         serial_puts("[MM] ERROR: physical page allocator initialization failed.\n");
         serial_put_hex32((uint32_t)status);
@@ -565,6 +567,7 @@ void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr)
     uint64_t kernel_base;
     uint64_t kernel_end;
     uint32_t mmap_addr;
+    uint32_t mmap_length;
     qm_status_t status;
     qm_kernel_init_entry_t entries[] = {
         {"early-diagnostics", QM_KERNEL_INIT_EARLY, kernel_init_early},
@@ -585,10 +588,13 @@ void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr)
         serial_puts("[BOOT] ERROR: Multiboot info pointer is outside the early identity map.\n");
         for (;;) __asm__ volatile("cli; hlt" ::: "memory");
     }
+    mmap_length = ((const volatile uint32_t *)(uintptr_t)multiboot_info_addr)[11];
     mmap_addr = ((const volatile uint32_t *)(uintptr_t)multiboot_info_addr)[12];
+    g_boot_multiboot_mmap_addr = mmap_addr;
+    g_boot_multiboot_mmap_length = mmap_length;
     kernel_base = (uint64_t)(uintptr_t)&__kernel64_start;
     kernel_end = (uint64_t)(uintptr_t)&__kernel64_end;
-    if (kernel_end <= kernel_base || mmap_addr == 0) {
+    if (kernel_end <= kernel_base || mmap_addr == 0 || mmap_length == 0) {
         serial_puts("[BOOT] ERROR: kernel or Multiboot memory-map range is invalid.\n");
         for (;;) __asm__ volatile("cli; hlt" ::: "memory");
     }

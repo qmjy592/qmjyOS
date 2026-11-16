@@ -49,6 +49,17 @@ int main(void)
     info.memory_map_entry_size = 1;
     assert(qm_boot_validate_info(&info) == QM_ERR_CORRUPT);
     info = valid_boot_info();
+    info.kernel_virtual_base = UINT64_MAX - 0x7FFU;
+    info.kernel_physical_size = 0x1000U;
+    assert(qm_boot_validate_info(&info) == QM_ERR_OVERFLOW);
+    info = valid_boot_info();
+    info.kernel_entry_virtual = info.kernel_virtual_base - 1U;
+    assert(qm_boot_validate_info(&info) == QM_ERR_CORRUPT);
+    info = valid_boot_info();
+    info.kernel_entry_virtual = info.kernel_virtual_base +
+                                info.kernel_physical_size;
+    assert(qm_boot_validate_info(&info) == QM_ERR_CORRUPT);
+    info = valid_boot_info();
 
     assert(qm_kernel_init_register(NULL) == QM_ERR_INVALID);
     assert(qm_kernel_init_register(&e1) == QM_OK);

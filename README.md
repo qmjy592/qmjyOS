@@ -158,9 +158,9 @@ The following describes the current source tree and documented test evidence. It
 
 ## QBuild and build workflow / QBuild 与构建流程
 
-QBuild version **0.5.0** is the unified configuration, module-validation, planning, build, and test entry point. The existing Makefile remains the actual build execution foundation.
+QBuild version **1.0.0** is the unified configuration, module-management, planning, build, test, diagnostics, and reporting entry point. The existing Makefile remains the actual build execution foundation.
 
-QBuild **0.5.0** 是统一的配置、模块校验、构建规划、构建和测试入口。现有 Makefile 仍是实际执行构建的基础。
+QBuild **1.0.0** 是统一的配置、模块管理、构建规划、构建、测试、诊断和报告入口。现有 Makefile 仍是实际执行构建的基础。
 
 ### Supported target / 当前支持目标
 
@@ -356,3 +356,12 @@ The intended release scope includes:
 A planned component must not be described as implemented.
 Every release component needs implementation evidence and
 acceptance tests. Update this document when its status changes.
+
+
+<!-- QBUILD-1.0.0-2026-11-16 -->
+
+## QBuild 1.0.0 — Current build-system baseline
+
+QBuild is now being advanced from its v0.5.0 foundation to the 1.0.0 build and project-management CLI. The 1.0.0 implementation adds guarded module enable/disable operations, integrity-checked configuration snapshots and rollback-aware restore, machine-readable build/test reports, toolchain diagnostics, and QBuild's own regression suite. The existing Makefile remains the actual kernel build and test backend. Only x86_64 + BIOS is supported; UEFI, AArch64, dynamic module loading, and a complete QTest runtime are not claimed. QBuild 1.0.0 is a separate tool version and does not change the planned qmjyOS 0.1.0 system release.
+
+QBuild 1.0.0 的开发目标是在 v0.5.0 基础上提供稳定的构建与工程管理入口，新增带依赖保护的模块启停、带完整性校验的配置快照与回滚恢复、机器可读构建/测试报告、工具链诊断和 QBuild 自身回归测试。内核真实构建与测试仍由现有 Makefile 执行。当前仍只支持 x86_64 + BIOS；不宣称 UEFI、AArch64、动态模块加载或完整 QTest 运行时已经实现。QBuild 版本独立于 qmjyOS 0.1.0 系统发布版本。
