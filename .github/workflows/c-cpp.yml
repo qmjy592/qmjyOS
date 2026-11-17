@@ -212,9 +212,6 @@ jobs:
           llvm-readobj --file-headers --program-headers kernel64-uefi.elf
 
       - name: Run UEFI OVMF runtime tests
-        env:
-          OVMF_CODE: /usr/share/OVMF/OVMF_CODE.fd
-          OVMF_VARS: /usr/share/OVMF/OVMF_VARS.fd
         run: |
           sh tools/qbuild/qbuild test \
             --arch x86_64 \
