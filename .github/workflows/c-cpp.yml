@@ -38,6 +38,13 @@ jobs:
             --boot bios \
             --jobs 4
 
+      - name: Validate x86_64 UEFI target configuration
+        run: |
+          sh tools/qbuild/qbuild config \
+            --arch x86_64 \
+            --boot uefi \
+            --jobs 4
+
       - name: Verify unsupported targets are rejected
         shell: bash
         run: |
@@ -70,7 +77,7 @@ jobs:
             echo "[PASS] $arch + $boot correctly rejected"
           }
 
-          check_rejected_target x86_64 uefi
+          check_rejected_target aarch64 uefi
           check_rejected_target aarch64 bios
 
       - name: Inspect QBuild modules and dependencies
@@ -87,6 +94,13 @@ jobs:
           sh tools/qbuild/qbuild plan \
             --arch x86_64 \
             --boot bios \
+            --jobs 4
+
+      - name: Validate x86_64 UEFI dependency plan
+        run: |
+          sh tools/qbuild/qbuild plan \
+            --arch x86_64 \
+            --boot uefi \
             --jobs 4
 
   build-and-test:
@@ -142,13 +156,87 @@ jobs:
           bash tools/qemu_boot_test.sh
 
       - name: Upload kernel build artifacts
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qmjyOS-x86_64-bios-kernel
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
           path: |
             kernel.elf
             kernel64.elf
             kernel64.bin
+
+
+            build/qbuild/reports/**
+            build/test-evidence/host-sanitizers/**
+            build/qfs-crash-tests/**
+            build/test-evidence/qboot-bios/**
+            build/test-evidence/qboot-uefi/**
+            build/test-evidence/qemu-boot/**
+            build/phase12-unified/qfs-ide-*/runtime/**
+  uefi-build-and-test:
+    name: x86_64 UEFI build and OVMF boot test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs:
+      - code-and-config
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install UEFI build and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            lld \
+            llvm \
+            make \
+            python3 \
+            qemu-system-x86 \
+            ovmf
+
+      - name: Build QBoot UEFI and x86_64 kernel with QBuild
+        run: |
+          sh tools/qbuild/qbuild build \
+            --arch x86_64 \
+            --boot uefi \
+            --jobs 4
+
+      - name: Verify EFI PE/COFF and kernel ELF64 formats
+        run: |
+          file build/qboot-uefi/esp/EFI/BOOT/BOOTX64.EFI
+          llvm-readobj --file-headers build/qboot-uefi/esp/EFI/BOOT/BOOTX64.EFI
+          llvm-readobj --file-headers --program-headers kernel64-uefi.elf
+
+      - name: Run UEFI OVMF runtime tests
+        env:
+          OVMF_CODE: /usr/share/OVMF/OVMF_CODE.fd
+          OVMF_VARS: /usr/share/OVMF/OVMF_VARS.fd
+        run: |
+          sh tools/qbuild/qbuild test \
+            --arch x86_64 \
+            --boot uefi \
+            --jobs 4
+
+      - name: Upload UEFI boot artifacts and runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qmjyOS-x86_64-uefi-boot
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            kernel64-uefi.elf
+            build/qboot-uefi/esp/EFI/BOOT/BOOTX64.EFI
+            build/qboot-uefi/esp/EFI/QMJYOS/KERNEL64-UEFI.ELF
+            build/test-evidence/qboot-uefi/*.log
+            build/qbuild/reports/**
+            build/test-evidence/host-sanitizers/**
+            build/qfs-crash-tests/**
+            build/test-evidence/qboot-bios/**
+            build/test-evidence/qboot-uefi/**
+            build/test-evidence/qemu-boot/**
+            build/phase12-unified/qfs-ide-*/runtime/**

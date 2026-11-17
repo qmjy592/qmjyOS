@@ -488,7 +488,10 @@ static qm_boot_memory_region_t g_kernel_memory_regions[QM_BOOT_MAX_MEMORY_REGION
 static qm_status_t kernel_init_early(void)
 {
     serial_puts("Hello, x86_64 kernel!\n");
-    serial_dump_multiboot_map(g_boot_multiboot_magic, g_boot_multiboot_info_addr);
+    if (g_kernel_boot_info.firmware == QM_BOOT_FIRMWARE_BIOS)
+        serial_dump_multiboot_map(g_boot_multiboot_magic, g_boot_multiboot_info_addr);
+    else
+        serial_puts("[BOOT] UEFI boot information is active.\n");
     return QM_OK;
 }
 
@@ -507,15 +510,23 @@ static qm_status_t kernel_init_memory(void)
     int status;
     status = mm_init_from_boot_info(
         &g_kernel_boot_info,
-        g_boot_multiboot_info_addr, 88U,
-        g_boot_multiboot_mmap_addr, g_boot_multiboot_mmap_length);
+        g_kernel_boot_info.firmware == QM_BOOT_FIRMWARE_BIOS ?
+            g_boot_multiboot_info_addr : 0,
+        g_kernel_boot_info.firmware == QM_BOOT_FIRMWARE_BIOS ? 88U : 0,
+        g_kernel_boot_info.firmware == QM_BOOT_FIRMWARE_BIOS ?
+            g_boot_multiboot_mmap_addr : 0,
+        g_kernel_boot_info.firmware == QM_BOOT_FIRMWARE_BIOS ?
+            g_boot_multiboot_mmap_length : 0);
     if (status != MM_OK) {
         serial_puts("[MM] ERROR: physical page allocator initialization failed.\n");
         serial_put_hex32((uint32_t)status);
         serial_puts("\n");
         return QM_ERR_IO;
     }
-    serial_puts("Physical page allocator: initialized from Multiboot mmap.\n");
+    if (g_kernel_boot_info.firmware == QM_BOOT_FIRMWARE_BIOS)
+        serial_puts("Physical page allocator: initialized from Multiboot mmap.\n");
+    else
+        serial_puts("Physical page allocator: initialized from qm_boot_info_t memory map.\n");
     if (mm_self_test() != MM_OK) {
         serial_puts("Physical page allocator self-test: FAIL.\n");
         return QM_ERR_STATE;
@@ -561,13 +572,9 @@ static qm_status_t kernel_init_storage(void)
     return QM_OK; /* Storage is optional when no secondary QFS disk is attached. */
 }
 
-/* QM_PHASE2_PHASE3_MAIN: Multiboot compatibility adapter + ordered init. */
-void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr)
+/* Shared post-handoff initialization for BIOS and UEFI. */
+static void kernel_run_after_boot_info(void)
 {
-    uint64_t kernel_base;
-    uint64_t kernel_end;
-    uint32_t mmap_addr;
-    uint32_t mmap_length;
     qm_status_t status;
     qm_kernel_init_entry_t entries[] = {
         {"early-diagnostics", QM_KERNEL_INIT_EARLY, kernel_init_early},
@@ -578,11 +585,49 @@ void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr)
     };
     qm_size_t i;
 
+    for (i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
+        status = qm_kernel_init_register(&entries[i]);
+        if (status != QM_OK) {
+            serial_puts("[KERNEL] ERROR: init callback registration failed.\n");
+            serial_put_hex32((uint32_t)status);
+            serial_puts("\n");
+            for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+        }
+    }
+
+    status = qm_kernel_init(&g_kernel_boot_info);
+    if (status != QM_OK) {
+        serial_puts("[KERNEL] ERROR: ordered initialization registry failed.\n");
+        serial_put_hex32((uint32_t)status);
+        serial_puts("\n");
+        for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+    }
+    serial_puts("[KERNEL] Ordered initialization registry: PASS.\n");
+
+    if (ring3_prepare_and_run() == 0)
+        serial_puts("[Ring 3] Basic privilege transition: PASS.\n");
+    else
+        serial_puts("[Ring 3] Test did not complete successfully.\n");
+
+    task_init();
+    serial_puts("Starting cooperative Ring 0 scheduler.\n");
+    __asm__ volatile("sti" ::: "memory");
+    task_start();
+}
+
+/* BIOS compatibility entry: the existing Multiboot v1 path is preserved. */
+void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr)
+{
+    uint64_t kernel_base;
+    uint64_t kernel_end;
+    uint32_t mmap_addr;
+    uint32_t mmap_length;
+    qm_status_t status;
+
     serial_init();
     g_boot_multiboot_magic = multiboot_magic;
     g_boot_multiboot_info_addr = multiboot_info_addr;
 
-    /* The current bootstrap identity-maps only the first GiB at this stage. */
     if (multiboot_info_addr == 0 ||
         (uint64_t)multiboot_info_addr + 88U > (1ULL << 30)) {
         serial_puts("[BOOT] ERROR: Multiboot info pointer is outside the early identity map.\n");
@@ -620,35 +665,25 @@ void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr)
         for (;;) __asm__ volatile("cli; hlt" ::: "memory");
     }
     serial_puts("[BOOT] Versioned qm_boot_info_t constructed and validated.\n");
+    kernel_run_after_boot_info();
+}
 
-    for (i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
-        status = qm_kernel_init_register(&entries[i]);
-        if (status != QM_OK) {
-            serial_puts("[KERNEL] ERROR: init callback registration failed.\n");
-            serial_put_hex32((uint32_t)status);
-            serial_puts("\n");
-            for (;;) __asm__ volatile("cli; hlt" ::: "memory");
-        }
-    }
+/* UEFI x64 entry: RDI points to a QBoot Protocol v1 structure. */
+void main_uefi(qm_boot_info_t *boot_info)
+{
+    serial_init();
+    g_boot_multiboot_magic = 0;
+    g_boot_multiboot_info_addr = 0;
+    g_boot_multiboot_mmap_addr = 0;
+    g_boot_multiboot_mmap_length = 0;
 
-    status = qm_kernel_init(&g_kernel_boot_info);
-    if (status != QM_OK) {
-        serial_puts("[KERNEL] ERROR: ordered initialization registry failed.\n");
-        serial_put_hex32((uint32_t)status);
-        serial_puts("\n");
+    if (boot_info == NULL || qm_boot_validate_info(boot_info) != QM_OK ||
+        boot_info->architecture != QM_BOOT_ARCH_X86_64 ||
+        boot_info->firmware != QM_BOOT_FIRMWARE_UEFI) {
+        serial_puts("[BOOT] ERROR: invalid UEFI qm_boot_info_t handoff.\n");
         for (;;) __asm__ volatile("cli; hlt" ::: "memory");
     }
-    serial_puts("[KERNEL] Ordered initialization registry: PASS.\n");
-
-    /* Preserve the existing isolated Ring 3 smoke test and cooperative scheduler. */
-    if (ring3_prepare_and_run() == 0) {
-        serial_puts("[Ring 3] Basic privilege transition: PASS.\n");
-    } else {
-        serial_puts("[Ring 3] Test did not complete successfully.\n");
-    }
-
-    task_init();
-    serial_puts("Starting cooperative Ring 0 scheduler.\n");
-    __asm__ volatile("sti" ::: "memory");
-    task_start();
+    g_kernel_boot_info = *boot_info;
+    serial_puts("[BOOT] UEFI qm_boot_info_t accepted.\n");
+    kernel_run_after_boot_info();
 }

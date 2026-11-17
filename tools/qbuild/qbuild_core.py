@@ -23,7 +23,7 @@ SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 DEFAULT_TEST_TARGETS = (
     "test-qbuild", "test-memory", "test-paging", "test-heap", "test-vfs", "test-ramfs",
     "test-qfs", "test-interfaces", "test-kernel-foundation", "test-elf64",
-    "test-process", "test-services", "test-boot",
+    "test-process", "test-services",
 )
 
 
@@ -449,8 +449,8 @@ def validate_target(arch: str, boot: str, jobs: int) -> None:
         raise ValueError(f"不支持的架构名称：{arch}")
     if boot not in {"bios", "uefi"}:
         raise ValueError(f"不支持的启动方式：{boot}")
-    if arch != "x86_64" or boot != "bios":
-        raise RuntimeError(f"目标尚未实现：{arch} + {boot}；当前仅支持 x86_64 + bios")
+    if arch != "x86_64":
+        raise RuntimeError(f"目标尚未实现：{arch} + {boot}；当前仅支持 x86_64 + bios/uefi")
     if jobs < 1:
         raise ValueError("并行任务数必须是正整数")
 
@@ -470,6 +470,17 @@ def command_build(root: Path, args: argparse.Namespace, selected: list[str]) -> 
     )
     if preflight != 0:
         return preflight
+    if args.boot == "uefi":
+        if selected and any(module not in {"QBOOT", "QBOOT_UEFI"} for module in selected):
+            raise ValueError("UEFI 启动目标需要完整内核映像；请勿使用局部内核模块选择")
+        plan_result = run_tracked(
+            root, "plan", [sys.executable, str(root / "tools/qbuild/module_plan.py"), "--make"], context
+        )
+        if plan_result != 0:
+            return plan_result
+        return run_tracked(
+            root, "build", ["make", f"-j{args.jobs}", "qboot-uefi"], context
+        )
     if not selected:
         plan_result = run_tracked(
             root, "plan", [sys.executable, str(root / "tools/qbuild/module_plan.py"), "--make"], context
@@ -495,13 +506,19 @@ def command_build(root: Path, args: argparse.Namespace, selected: list[str]) -> 
 
 def command_test(root: Path, args: argparse.Namespace) -> int:
     validate_target(args.arch, args.boot, args.jobs)
-    context = {"arch": args.arch, "boot": args.boot, "jobs": args.jobs, "targets": list(DEFAULT_TEST_TARGETS)}
+    # Host-side tests are shared; boot-runtime tests are firmware-specific.
+    targets = list(DEFAULT_TEST_TARGETS)
+    if args.boot == "bios":
+        targets.append("test-boot")
+    elif args.boot == "uefi":
+        targets.append("test-qboot-uefi")
+    context = {"arch": args.arch, "boot": args.boot, "jobs": args.jobs, "targets": targets}
     preflight = run_tracked(
         root, "preflight", [sys.executable, str(root / "tools/qbuild/module_plan.py"), "--check"], context
     )
     if preflight != 0:
         return preflight
-    command = ["make", f"-j{args.jobs}", *DEFAULT_TEST_TARGETS]
+    command = ["make", f"-j{args.jobs}", *targets]
     return run_tracked(root, "test", command, context)
 
 

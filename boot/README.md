@@ -24,7 +24,7 @@ It is not yet the complete QBoot BIOS manager.
 The following remain planned:
 
 - Complete QBoot BIOS manager
-- x86_64 UEFI application
+- Complete x86_64 UEFI boot path (initial EFI loader and kernel handoff are under development; OVMF runtime verification is still required)
 - AArch64 boot implementation
 - Boot menu and persistent boot entries
 - Kernel image validation and loading
@@ -35,3 +35,19 @@ and declared in include/qmjy/boot.h.
 
 A directory or protocol definition does not prove that a boot path
 has been implemented or runtime-verified.
+
+
+## UEFI first implementation scope
+
+The `qboot-uefi` target builds `EFI/BOOT/BOOTX64.EFI` and an x86_64 kernel ELF
+whose entry is `_start64_uefi`. The linker page-aligns RX/R/RW ELF segments; the
+loader stages all PT_LOAD segments as EFI_LOADER_DATA to avoid firmware
+write-protection during copying, then the kernel replaces the firmware page
+ tables before executing the image. It gathers GOP and
+ACPI information, normalizes the UEFI memory
+map into `qm_boot_info_t`, and calls ExitBootServices with MapKey retry.
+
+The firmware entry and ELF format can be built independently. This does not
+constitute a supported release until `make test-qboot-uefi` passes on OVMF and
+BIOS regression tests continue to pass. Secure Boot, runtime services, a full
+boot menu, and final hybrid ISO authoring remain separate work.

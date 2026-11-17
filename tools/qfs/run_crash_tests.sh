@@ -11,12 +11,27 @@ command -v "$HOST_CC" >/dev/null 2>&1 || {
 }
 
 RUN_ID="${QFS_TEST_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
+case "$RUN_ID" in
+    ""|.|..|*[!A-Za-z0-9._-]*)
+        echo "[QFS TEST FAIL] Invalid QFS_TEST_RUN_ID: $RUN_ID" >&2
+        exit 1
+        ;;
+esac
 BUILD_DIR="build/qfs-crash-tests/$RUN_ID"
 if [ -e "$BUILD_DIR" ]; then
     echo "[QFS TEST FAIL] Refusing to overwrite: $BUILD_DIR" >&2
     exit 1
 fi
 mkdir -p "$BUILD_DIR"
+
+# QMJYOS_CI_EVIDENCE_LOG_V1
+command -v tee >/dev/null 2>&1 || {
+    echo "[QFS TEST FAIL] tee is required to retain the test log." >&2
+    exit 1
+}
+LOG_FILE="$BUILD_DIR/run.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[QFS TEST] Evidence log: $LOG_FILE"
 
 COMMON=( -std=c11 -Wall -Wextra -Werror -I. -Iinclude )
 

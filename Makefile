@@ -32,7 +32,7 @@ CFLAGS_64 := --target=x86_64-unknown-none -m64 \
 -nostdlib -fno-builtin -Wall -O2 -g -MMD -MP $(CPPFLAGS)
 
 LDFLAGS_32 := -m elf_i386 -T linker32.ld -nostdlib -static
-LDFLAGS_64 := -m elf_x86_64 -T linker64.ld -nostdlib -static
+LDFLAGS_64 := -m elf_x86_64 -z max-page-size=0x1000 -T linker64.ld -nostdlib -static
 
 MODULE_MK := build/modules.mk
 
@@ -78,7 +78,7 @@ run: kernel.elf
 clean:
 	rm -f $(OBJS_32) $(OBJS_64)
 	rm -f $(OBJS_32:.o=.d) $(OBJS_64:.o=.d)
-	rm -f kernel.elf kernel64.elf kernel64.bin kernel64.o
+	rm -f kernel.elf kernel64.elf kernel64-uefi.elf kernel64.bin kernel64.o
 	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
 	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST) $(HOST_QFS_TEST)
 	rm -f $(HOST_INTERFACE_TEST)
@@ -232,7 +232,8 @@ HOST_KERNEL_FOUNDATION_TESTS := \
 $(HOST_KERNEL_FOUNDATION_DIR)/kernel-foundation \
 $(HOST_KERNEL_FOUNDATION_DIR)/init-failure \
 $(HOST_KERNEL_FOUNDATION_DIR)/syscall \
-$(HOST_KERNEL_FOUNDATION_DIR)/boot-info-multiboot
+$(HOST_KERNEL_FOUNDATION_DIR)/boot-info-multiboot \
+$(HOST_KERNEL_FOUNDATION_DIR)/boot-info-uefi
 
 .PHONY: test-kernel-foundation
 test-kernel-foundation: $(HOST_KERNEL_FOUNDATION_TESTS)
@@ -251,6 +252,9 @@ $(HOST_KERNEL_FOUNDATION_DIR)/syscall: tests/syscall/syscall_test.c kernel/sysca
 >$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
 
 $(HOST_KERNEL_FOUNDATION_DIR)/boot-info-multiboot: tests/kernel/boot_info_multiboot_test.c kernel/core/boot_info.c | $(HOST_KERNEL_FOUNDATION_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
+
+$(HOST_KERNEL_FOUNDATION_DIR)/boot-info-uefi: tests/kernel/boot_info_uefi_test.c kernel/core/boot_info.c | $(HOST_KERNEL_FOUNDATION_DIR)
 >$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^
 
 
@@ -300,3 +304,35 @@ $(HOST_PROCESS_TEST): tests/kernel/process_test.c kernel/core/process.c include/
 .PHONY: test-qbuild
 test-qbuild:
 >python3 tests/qbuild/test_qbuild_core.py
+
+
+# QBoot x86_64 UEFI application and UEFI-entry kernel image.
+UEFI_BUILD_DIR := build/qboot-uefi
+UEFI_ESP_DIR := $(UEFI_BUILD_DIR)/esp
+UEFI_CC ?= clang
+UEFI_LD ?= lld-link
+UEFI_TARGET := --target=x86_64-pc-windows-msvc
+UEFI_CFLAGS := $(UEFI_TARGET) -std=c11 -O2 -Wall -Wextra -Werror \
+    -ffreestanding -fshort-wchar -mno-red-zone \
+    -fno-stack-protector -fno-builtin -nostdlib -Iinclude
+
+.PHONY: qboot-uefi test-qboot-uefi
+
+kernel64-uefi.elf: $(OBJS_64) linker64.ld
+>$(LD) $(LDFLAGS_64) -e _start64_uefi -o $@ $(OBJS_64)
+
+qboot-uefi: kernel64-uefi.elf
+>mkdir -p $(UEFI_BUILD_DIR) $(UEFI_ESP_DIR)/EFI/BOOT $(UEFI_ESP_DIR)/EFI/QMJYOS
+>$(UEFI_CC) $(UEFI_CFLAGS) -c boot/uefi/efi_main.c -o $(UEFI_BUILD_DIR)/efi_main.obj
+>$(UEFI_CC) $(UEFI_CFLAGS) -c kernel/core/boot_info.c -o $(UEFI_BUILD_DIR)/boot_info.obj
+>$(UEFI_LD) /machine:x64 /subsystem:efi_application /entry:efi_main /nodefaultlib \
+>    /out:$(UEFI_ESP_DIR)/EFI/BOOT/BOOTX64.EFI \
+>    $(UEFI_BUILD_DIR)/efi_main.obj $(UEFI_BUILD_DIR)/boot_info.obj
+>cp kernel64-uefi.elf $(UEFI_ESP_DIR)/EFI/QMJYOS/KERNEL64-UEFI.ELF
+>file $(UEFI_ESP_DIR)/EFI/BOOT/BOOTX64.EFI
+>llvm-readobj --file-headers $(UEFI_ESP_DIR)/EFI/BOOT/BOOTX64.EFI
+>llvm-readobj --file-headers --program-headers kernel64-uefi.elf
+
+test-qboot-uefi: qboot-uefi
+>python3 tests/boot/test_uefi_elf_layout.py kernel64-uefi.elf
+>bash tools/qboot/test_uefi_boot.sh

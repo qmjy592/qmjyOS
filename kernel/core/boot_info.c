@@ -1,6 +1,11 @@
 #include "qmjy/boot.h"
 #include <stddef.h>
 #include <stdint.h>
+#include "qmjy/boot_offsets.h"
+
+_Static_assert(offsetof(qm_boot_info_t, page_table_root_physical) ==
+               QM_BOOT_INFO_PAGE_TABLE_ROOT_OFFSET,
+               "boot info page-table-root offset changed; update entry64.S");
 
 static int range_overflows(uint64_t base, uint64_t length)
 {
@@ -40,6 +45,21 @@ qm_status_t qm_boot_validate_info(const qm_boot_info_t *info)
         info->firmware != QM_BOOT_FIRMWARE_UEFI &&
         info->firmware != QM_BOOT_FIRMWARE_EFI_STUB)
         return QM_ERR_NOT_SUPPORTED;
+
+    if (info->protocol_minor >= 1U &&
+        info->firmware == QM_BOOT_FIRMWARE_UEFI &&
+        (info->page_table_root_physical == 0 ||
+         (info->page_table_root_physical & 0xFFFULL) != 0 ||
+         info->page_table_root_physical >= 0x40000000ULL))
+        return QM_ERR_CORRUPT;
+
+    /* The active UEFI CR3 block is a single 68-page allocation.
+     * Validate the complete span, not only the root page address. */
+    if (info->protocol_minor >= 1U &&
+        info->firmware == QM_BOOT_FIRMWARE_UEFI &&
+        info->page_table_root_physical >
+            0x40000000ULL - QM_BOOT_UEFI_PAGE_TABLE_SIZE)
+        return QM_ERR_CORRUPT;
 
     if (info->memory_map_count == 0 || info->memory_map_physical == 0 ||
         info->memory_map_entry_size < sizeof(qm_boot_memory_region_t))
@@ -257,6 +277,218 @@ qm_status_t qm_boot_info_from_multiboot_v1(
     result.kernel_physical_size = kernel_physical_size;
     result.kernel_virtual_base = kernel_virtual_base;
     result.kernel_entry_virtual = kernel_entry_virtual;
+
+    if (qm_boot_validate_info(&result) != QM_OK)
+        return QM_ERR_CORRUPT;
+    for (i = 0; i < count; ++i)
+        region_storage[i] = parsed[i];
+    *out_info = result;
+    return QM_OK;
+}
+
+
+#define QM_UEFI_PAGE_SIZE 4096ULL
+
+static qm_u32_t qm_boot_map_uefi_type(qm_u32_t type)
+{
+    switch (type) {
+    case 1: /* EfiLoaderCode */
+    case 2: /* EfiLoaderData */
+    case 3: /* EfiBootServicesCode */
+    case 4: /* EfiBootServicesData */
+        return QM_MEMORY_BOOTLOADER_RECLAIM;
+    case 7: /* EfiConventionalMemory */
+        return QM_MEMORY_USABLE;
+    case 8: /* EfiUnusableMemory */
+        return QM_MEMORY_BAD;
+    case 9: /* EfiACPIReclaimMemory */
+        return QM_MEMORY_ACPI_RECLAIM;
+    case 10: /* EfiACPIMemoryNVS */
+        return QM_MEMORY_ACPI_NVS;
+    default:
+        return QM_MEMORY_RESERVED;
+    }
+}
+
+static qm_status_t qm_boot_uefi_append_region(
+    qm_boot_memory_region_t *regions,
+    qm_u32_t *count,
+    qm_u32_t capacity,
+    qm_u64_t base,
+    qm_u64_t length,
+    qm_u32_t type,
+    qm_u32_t attributes)
+{
+    qm_u32_t i;
+    qm_u64_t end;
+
+    if (length == 0)
+        return QM_OK;
+    if (range_overflows(base, length))
+        return QM_ERR_OVERFLOW;
+    end = base + length;
+
+    /* Reject overlap; merge adjacent equal-type descriptors to control count. */
+    for (i = 0; i < *count; ++i) {
+        qm_u64_t other_end;
+        if (range_overflows(regions[i].base, regions[i].length))
+            return QM_ERR_CORRUPT;
+        other_end = regions[i].base + regions[i].length;
+        if (base < other_end && regions[i].base < end)
+            return QM_ERR_CORRUPT;
+    }
+    if (*count != 0) {
+        qm_boot_memory_region_t *last = &regions[*count - 1U];
+        if (!range_overflows(last->base, last->length) &&
+            last->base + last->length == base &&
+            last->type == type && last->attributes == attributes) {
+            if (last->length > UINT64_MAX - length)
+                return QM_ERR_OVERFLOW;
+            last->length += length;
+            return QM_OK;
+        }
+    }
+    if (*count >= capacity)
+        return QM_ERR_NO_SPACE;
+    regions[*count].base = base;
+    regions[*count].length = length;
+    regions[*count].type = type;
+    regions[*count].attributes = attributes;
+    ++*count;
+    return QM_OK;
+}
+
+qm_status_t qm_boot_info_from_uefi(
+    const void *memory_map_view,
+    qm_u64_t memory_map_size,
+    qm_u64_t memory_map_descriptor_size,
+    qm_boot_memory_region_t *region_storage,
+    qm_u64_t region_storage_physical,
+    qm_u32_t region_capacity,
+    qm_u64_t kernel_physical_base,
+    qm_u64_t kernel_physical_size,
+    qm_u64_t kernel_virtual_base,
+    qm_u64_t kernel_entry_virtual,
+    const qm_boot_framebuffer_t *framebuffer,
+    qm_u64_t acpi_rsdp_physical,
+    qm_u64_t firmware_system_table_physical,
+    qm_u64_t page_table_root_physical,
+    qm_boot_info_t *out_info)
+{
+    const qm_u8_t *map = (const qm_u8_t *)memory_map_view;
+    qm_boot_memory_region_t parsed[QM_BOOT_MAX_MEMORY_REGIONS];
+    qm_boot_info_t result;
+    qm_u64_t kernel_end;
+    qm_u64_t covered = 0;
+    qm_u64_t offset;
+    qm_u32_t count = 0;
+    qm_size_t i;
+
+    if (map == NULL || region_storage == NULL || out_info == NULL ||
+        memory_map_size == 0 ||
+        memory_map_descriptor_size < sizeof(qm_boot_uefi_memory_descriptor_t) ||
+        memory_map_size % memory_map_descriptor_size != 0 ||
+        region_storage_physical == 0 || region_capacity == 0 ||
+        region_capacity > QM_BOOT_MAX_MEMORY_REGIONS)
+        return QM_ERR_INVALID;
+    if (kernel_physical_size == 0 ||
+        range_overflows(kernel_physical_base, kernel_physical_size) ||
+        range_overflows(kernel_virtual_base, kernel_physical_size))
+        return QM_ERR_OVERFLOW;
+    kernel_end = kernel_physical_base + kernel_physical_size;
+    if (kernel_entry_virtual < kernel_virtual_base ||
+        kernel_entry_virtual >= kernel_virtual_base + kernel_physical_size)
+        return QM_ERR_CORRUPT;
+    if (region_storage_physical > UINT64_MAX -
+        (qm_u64_t)region_capacity * sizeof(*region_storage))
+        return QM_ERR_OVERFLOW;
+
+    for (offset = 0; offset < memory_map_size;
+         offset += memory_map_descriptor_size) {
+        qm_boot_uefi_memory_descriptor_t descriptor;
+        qm_u64_t length;
+        qm_u64_t end;
+        qm_u64_t overlap_start;
+        qm_u64_t overlap_end;
+        qm_u32_t mapped_type;
+        qm_u32_t attributes;
+        qm_status_t status;
+
+        for (i = 0; i < sizeof(descriptor); ++i)
+            ((qm_u8_t *)&descriptor)[i] = map[offset + i];
+        if (descriptor.number_of_pages == 0 ||
+            descriptor.number_of_pages > UINT64_MAX / QM_UEFI_PAGE_SIZE)
+            return QM_ERR_CORRUPT;
+        length = descriptor.number_of_pages * QM_UEFI_PAGE_SIZE;
+        if (range_overflows(descriptor.physical_start, length))
+            return QM_ERR_OVERFLOW;
+        end = descriptor.physical_start + length;
+        mapped_type = qm_boot_map_uefi_type(descriptor.type);
+        attributes = (qm_u32_t)(descriptor.attributes & 0xFFFFFFFFULL);
+
+        overlap_start = descriptor.physical_start > kernel_physical_base ?
+                        descriptor.physical_start : kernel_physical_base;
+        overlap_end = end < kernel_end ? end : kernel_end;
+        if (overlap_start >= overlap_end) {
+            status = qm_boot_uefi_append_region(
+                parsed, &count, region_capacity,
+                descriptor.physical_start, length, mapped_type, attributes);
+            if (status != QM_OK)
+                return status;
+            continue;
+        }
+
+        if (descriptor.physical_start < overlap_start) {
+            status = qm_boot_uefi_append_region(
+                parsed, &count, region_capacity,
+                descriptor.physical_start,
+                overlap_start - descriptor.physical_start,
+                mapped_type, attributes);
+            if (status != QM_OK)
+                return status;
+        }
+        status = qm_boot_uefi_append_region(
+            parsed, &count, region_capacity,
+            overlap_start, overlap_end - overlap_start,
+            QM_MEMORY_KERNEL, attributes);
+        if (status != QM_OK)
+            return status;
+        if (covered > UINT64_MAX - (overlap_end - overlap_start))
+            return QM_ERR_OVERFLOW;
+        covered += overlap_end - overlap_start;
+        if (end > overlap_end) {
+            status = qm_boot_uefi_append_region(
+                parsed, &count, region_capacity,
+                overlap_end, end - overlap_end,
+                mapped_type, attributes);
+            if (status != QM_OK)
+                return status;
+        }
+    }
+
+    if (count == 0 || covered != kernel_physical_size)
+        return QM_ERR_CORRUPT;
+
+    for (i = 0; i < sizeof(result); ++i)
+        ((qm_u8_t *)&result)[i] = 0;
+    result.magic = QM_BOOT_INFO_MAGIC;
+    result.protocol_major = QM_BOOT_PROTOCOL_MAJOR;
+    result.protocol_minor = QM_BOOT_PROTOCOL_MINOR;
+    result.struct_size = (qm_u32_t)sizeof(result);
+    result.architecture = QM_BOOT_ARCH_X86_64;
+    result.firmware = QM_BOOT_FIRMWARE_UEFI;
+    result.memory_map_physical = region_storage_physical;
+    result.memory_map_count = count;
+    result.memory_map_entry_size = (qm_u32_t)sizeof(*region_storage);
+    result.acpi_rsdp_physical = acpi_rsdp_physical;
+    result.firmware_system_table_physical = firmware_system_table_physical;
+    result.kernel_physical_base = kernel_physical_base;
+    result.kernel_physical_size = kernel_physical_size;
+    result.kernel_virtual_base = kernel_virtual_base;
+    result.kernel_entry_virtual = kernel_entry_virtual;
+    result.page_table_root_physical = page_table_root_physical;
+    if (framebuffer != NULL)
+        result.framebuffer = *framebuffer;
 
     if (qm_boot_validate_info(&result) != QM_OK)
         return QM_ERR_CORRUPT;

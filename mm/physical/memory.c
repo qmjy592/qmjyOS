@@ -1,6 +1,12 @@
 #include "memory.h"
 #include <stddef.h>
 
+_Static_assert(MM_PAGE_SIZE == QM_BOOT_UEFI_PAGE_SIZE,
+               "PMM and QBoot UEFI page sizes must match");
+_Static_assert(QM_BOOT_UEFI_PAGE_TABLE_SIZE ==
+               (qm_u64_t)QM_BOOT_UEFI_PAGE_TABLE_PAGES * MM_PAGE_SIZE,
+               "PMM reservation must cover the complete UEFI page-table block");
+
 /* Conservative early allocator: only type-1 Multiboot ranges below 1 GiB,
  * because the current bootstrap identity maps only that physical window. */
 #define MM_LIMIT (1ULL << 30)
@@ -482,6 +488,24 @@ int mm_init_from_boot_info(const qm_boot_info_t *info,
                     info->kernel_physical_size);
     MM_RESERVE_BOOT(info_address, info->struct_size);
     MM_RESERVE_BOOT(info->memory_map_physical, map_bytes);
+
+    /* Do not let PMM reclaim the page tables currently loaded in CR3.
+     * The loader allocates the full contiguous 68-page block even when
+     * fewer split page tables are needed for the kernel image. */
+    if (info->firmware == QM_BOOT_FIRMWARE_UEFI &&
+        info->protocol_minor >= 1U) {
+        const uint64_t page_table_base = info->page_table_root_physical;
+        const uint64_t page_table_size = QM_BOOT_UEFI_PAGE_TABLE_SIZE;
+
+        if (page_table_base == 0 ||
+            (page_table_base & (MM_PAGE_SIZE - 1ULL)) != 0 ||
+            page_table_base >= MM_LIMIT ||
+            page_table_size > MM_LIMIT - page_table_base) {
+            rc = MM_ERR_FORMAT;
+            goto reserve_failed;
+        }
+        MM_RESERVE_BOOT(page_table_base, page_table_size);
+    }
 
     /* The old loader-owned records are no longer parsed by PMM, but remain
      * reserved so the allocator cannot reuse memory still owned by firmware. */

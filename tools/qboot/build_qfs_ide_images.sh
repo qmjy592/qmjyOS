@@ -23,9 +23,10 @@ done
 [ -s tools/qboot/build_bios_image.sh ] ||
     fail "QBoot BIOS builder missing"
 
-BUILD_ROOT="${QFS_IDE_BUILD_ROOT:-build/qfs-ide}"
-FORMAT_DIR="${QFS_FORMAT_DIR:-build/qboot-qfs-format}"
-VERIFY_DIR="${QFS_VERIFY_DIR:-build/qboot-qfs-verify}"
+RUN_ID="${QFS_IDE_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
+BUILD_ROOT="${QFS_IDE_BUILD_ROOT:-build/qfs-ide-$RUN_ID}"
+FORMAT_DIR="${QFS_FORMAT_DIR:-build/qboot-qfs-format-$RUN_ID}"
+VERIFY_DIR="${QFS_VERIFY_DIR:-build/qboot-qfs-verify-$RUN_ID}"
 
 for directory in "$BUILD_ROOT" "$FORMAT_DIR" "$VERIFY_DIR"; do
     [ ! -e "$directory" ] ||
@@ -87,7 +88,12 @@ for object in "${OBJECTS[@]}"; do
     output="$BUILD_ROOT/common/$object"
     mkdir -p "$(dirname "$output")"
 
-    clang "${CFLAGS[@]}" \
+    EXTRA_CFLAGS=()
+    if [ "$source" = "arch/x86_64/boot/entry64.S" ]; then
+        EXTRA_CFLAGS+=(-DQBOOT_BIOS_ONLY)
+    fi
+
+    clang "${CFLAGS[@]}" "${EXTRA_CFLAGS[@]}" \
         -c "$source" \
         -o "$output"
 
@@ -114,7 +120,7 @@ build_mode() {
         -c tests/qfs_ide_test_main.c \
         -o "$test_object"
 
-    ld.lld -m elf_x86_64 \
+    ld.lld -m elf_x86_64 -z max-page-size=0x1000 \
         -T linker64.ld \
         -Map="$kernel_map" \
         -nostdlib -static \

@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -134,6 +135,11 @@ class QBuildCoreTests(unittest.TestCase):
         q.write_json_atomic(path, report)
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["qbuild_version"], "1.0.0")
 
+    def test_target_matrix_accepts_x86_64_uefi(self):
+        q.validate_target("x86_64", "uefi", 2)
+        with self.assertRaisesRegex(RuntimeError, "目标尚未实现"):
+            q.validate_target("aarch64", "uefi", 2)
+
     def test_cli_compatibility(self):
         args = q.build_parser().parse_args(["test", "--arch", "x86_64", "--boot", "bios", "--jobs", "2"])
         self.assertEqual(args.command, "test")
@@ -168,6 +174,33 @@ class QBuildCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             q.create_snapshot(self.root, "../escape")
 
+    def test_firmware_specific_test_selection(self):
+        self.assertNotIn("test-boot", q.DEFAULT_TEST_TARGETS)
+        self.assertNotIn("test-qboot-uefi", q.DEFAULT_TEST_TARGETS)
+
+        for boot, expected, unexpected in (
+            ("bios", "test-boot", "test-qboot-uefi"),
+            ("uefi", "test-qboot-uefi", "test-boot"),
+        ):
+            with self.subTest(boot=boot):
+                calls = []
+
+                def capture(root, label, command, context):
+                    calls.append((label, list(command), dict(context)))
+                    return 0
+
+                args = q.build_parser().parse_args([
+                    "test", "--arch", "x86_64", "--boot", boot, "--jobs", "2"
+                ])
+                with patch.object(q, "run_tracked", side_effect=capture):
+                    self.assertEqual(q.command_test(self.root, args), 0)
+
+                self.assertEqual([call[0] for call in calls], ["preflight", "test"])
+                selected = calls[1][1]
+                self.assertIn(expected, selected)
+                self.assertNotIn(unexpected, selected)
+                self.assertIn(expected, calls[1][2]["targets"])
+                self.assertNotIn(unexpected, calls[1][2]["targets"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

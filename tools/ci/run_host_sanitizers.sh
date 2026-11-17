@@ -4,6 +4,28 @@ set -Eeuo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)"
 cd "$ROOT"
 
+# QMJYOS_CI_EVIDENCE_LOG_V1
+command -v tee >/dev/null 2>&1 || {
+    echo "[SANITIZER FAIL] tee is required to retain the test log." >&2
+    exit 1
+}
+RUN_ID="${HOST_SANITIZER_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
+case "$RUN_ID" in
+    ""|*[!A-Za-z0-9._-]*)
+        echo "[SANITIZER FAIL] Invalid HOST_SANITIZER_RUN_ID: $RUN_ID" >&2
+        exit 1
+        ;;
+esac
+EVIDENCE_DIR="build/test-evidence/host-sanitizers"
+mkdir -p "$EVIDENCE_DIR"
+LOG_FILE="$EVIDENCE_DIR/run-$RUN_ID.log"
+[ ! -e "$LOG_FILE" ] || {
+    echo "[SANITIZER FAIL] Refusing to overwrite evidence log: $LOG_FILE" >&2
+    exit 1
+}
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[SANITIZER] Evidence log: $LOG_FILE"
+
 HOST_CC="${HOST_CC:-clang}"
 
 command -v "$HOST_CC" >/dev/null 2>&1 || {

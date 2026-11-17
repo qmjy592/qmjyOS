@@ -4,7 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-RUN_ID="${QFS_IDE_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
+RUN_ID="${QFS_IDE_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
+# QFS_ID_RUN_ID_VALIDATION_V1
+case "$RUN_ID" in
+    ""|.|..|*[!A-Za-z0-9._-]*)
+        echo "[QFS IDE TEST FAIL] Invalid QFS_IDE_RUN_ID: $RUN_ID" >&2
+        exit 1
+        ;;
+esac
 RUN_ROOT="build/phase12-unified/qfs-ide-${RUN_ID}"
 
 if [ -e "$RUN_ROOT" ]; then

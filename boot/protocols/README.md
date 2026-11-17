@@ -88,3 +88,30 @@ QBoot 必须保证启动信息及其引用的数据在内核完成复制或明�
 - 文件系统驱动
 - 启动映像签名验证
 - Secure Boot 策略
+
+
+## UEFI implementation handoff details
+
+The x86_64 UEFI loader uses the Microsoft x64 ABI while calling firmware
+services. It disables the firmware watchdog before the final memory-map and
+ExitBootServices sequence. After a successful ExitBootServices(), it transfers to the kernel
+using the System V x86_64 ABI with `RDI = qm_boot_info_t *` and interrupts
+disabled. It does not call Boot Services again and does not call
+SetVirtualAddressMap; the firmware's pre-virtual-map identity mappings remain
+in place until the kernel installs its own page tables.
+
+Protocol v1.1 adds `page_table_root_physical`. UEFI prepares a supervisor-only
+1-GiB identity map using 2-MiB pages before ExitBootServices; the kernel entry
+switches to that root only after moving to its own low-memory stack. This keeps
+the current kernel's first-GiB assumptions aligned with the BIOS bootstrap.
+
+The UEFI memory map is converted from its firmware-specific descriptor stride
+to `qm_boot_memory_region_t`. Conventional memory is usable; loader and boot
+service allocations remain bootloader-reclaimable; ACPI reclaim/NVS and
+unusable memory retain distinct types; unrecognized types are reserved. The
+loaded kernel's physical range is marked `QM_MEMORY_KERNEL`.
+
+The legacy BIOS Multiboot v1 bridge remains supported and continues to call
+`main(magic, info_addr)`. UEFI uses the alternate ELF entry `_start64_uefi`
+and calls `main_uefi(boot_info)`. These paths converge on the same ordered
+kernel initialization and scheduler.
