@@ -55,7 +55,7 @@ The final command includes the existing QBoot BIOS, QFS IDE and other tests. The
 
 <!-- QMjyOS-PHASE2-PHASE3-STATUS-UPDATE-2026-11-16 -->
 
-## Phase 2 / Phase 3 Status Clarification — 2026-11-16
+## Historical Phase 2 / Phase 3 Status Clarification — 2026-11-16
 
 ### 中文：实现边界
 
@@ -151,3 +151,10 @@ The user reported the QEMU BIOS serial output passing these markers on Termux: `
 Host regression targets include `test-process-runtime`, `test-scheduler-aspace`, and `test-syscall-x86_64-abi`. They do not prove hardware TLB behavior, safe recovery from arbitrary user faults, concurrent process scheduling, or production syscall semantics. User-copy validation currently preflights mappings and then directly copies; complete fault-safe copy recovery is still outstanding.
 
 Remaining Phase 3 work includes fault-safe user copy, broader user exception recovery, process concurrency, per-task kernel stack/context integration, preemptive scheduling, syscall authorization and ABI stabilization, and security review.
+
+
+## Current CI evidence snapshot — 2026-11-21
+
+For commit `927eb3665cb2a9b83670749ed84e2555709ba255`, [GitHub Actions Run #19](https://github.com/qmjy592/qmjyOS/actions/runs/44794506369) was in progress when checked. Code/QBuild validation and the x86_64 BIOS build/QEMU boot job had succeeded. The UEFI/OVMF job was still running. Re-check the run before making a final CI claim.
+
+对于提交 `927eb3665cb2a9b83670749ed84e2555709ba255`，查询时 Run #19 仍在运行。代码/QBuild 验证和 BIOS 构建/QEMU 启动已通过，UEFI/OVMF Job 仍在运行。

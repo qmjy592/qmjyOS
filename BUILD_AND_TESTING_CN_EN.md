@@ -153,6 +153,24 @@ This project is experimental. Do not use it as a secure operating system or to s
 
 <!-- QMjyOS-CI-EXPANSION-2026-11-16 -->
 
+## CI and Test Status — 2026-11-21
+
+Latest commit: `927eb3665cb2a9b83670749ed84e2555709ba255`.
+GitHub Actions [Run #19](https://github.com/qmjy592/qmjyOS/actions/runs/44794506369) was still in progress when checked.
+
+| Job | Snapshot result |
+|---|---|
+| Code and QBuild validation | PASS |
+| x86_64 BIOS build and QEMU boot test | PASS |
+| x86_64 UEFI build and OVMF boot test | RUNNING |
+
+The overall workflow must not be called green until the UEFI job completes.
+
+### 中文
+
+本次查询时 BIOS Job 已通过，UEFI/OVMF Job 仍在运行。该状态是历史快照，最终结论必须重新检查 GitHub Actions。
+
+
 ## CI Expansion — 2026-11-16
 
 ### 新增检查项目

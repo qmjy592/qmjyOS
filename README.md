@@ -236,23 +236,25 @@ qmjyOS 规划两个独立版本：
 
 技术标识符、源码符号、协议名称和开发诊断信息可以保持语言中立。具体政策见 [语言版本政策](docs/internationalization/LANGUAGE_POLICY.md)。政策文档定义的是目标要求，不代表两个版本已经全部实现或完成翻译。
 
-## Next development direction / 下一阶段方向
+## Current development direction / 当前开发方向
 
-Phase 2 is expected to focus on kernel infrastructure and runtime correctness, including:
+The active focus is **Phase 3 — Runtime Integration and Hardening**.
+Phase 1 is accepted; Phase 2 kernel-infrastructure foundations are in place.
+Phase 3 has an experimental ELF64 process-runtime path, but is not complete.
 
-1. Kernel initialization and subsystem ordering.
-2. Completing physical and virtual memory management, including kernel heap allocation.
-3. Strengthening GDT, TSS, IDT, exception, and interrupt handling.
-4. Building process/thread foundations and improving the scheduler, eventually adding preemption.
-5. Defining and validating a stable system-call ABI and user address-space lifecycle.
-6. Extending device, block-storage, and filesystem infrastructure.
-7. Expanding automated tests and QEMU runtime verification.
+Current priorities:
 
-第二阶段预计转向内核基础设施与运行时正确性，包括内核初始化和子系统顺序、物理/虚拟内存与内核堆、GDT/TSS/IDT/异常/中断、进程线程与调度器、系统调用 ABI、设备/块存储/文件系统，以及更完整的自动化测试和 QEMU 运行验证。
+1. Fault-safe user-memory access and user-exception recovery.
+2. Per-task kernel stacks and process-runtime scheduler integration.
+3. Multiple independent user address spaces and concurrent process scheduling.
+4. Stable syscall ABI, validation rules, and authorization.
+5. Timer-driven preemption and later SMP.
+6. QBoot BIOS completion and UEFI hardening.
+7. QEMU regression evidence and security review.
 
-These are development goals, not current implementation claims.
+当前重点为第三阶段：运行时集成与加固。第三阶段已有实验性 ELF64 进程运行时路径，但尚未完成。
 
-以上均为后续开发目标，不是当前已实现功能的声明。
+These are remaining development goals, not claims of completed features.
 
 ## Repository layout / 仓库结构
 
@@ -283,84 +285,55 @@ No license has been selected. All rights are reserved by default until a license
 
 <!-- QMjyOS-DOCS-CI-14 -->
 
-## 2026-11-16 Development and CI Status
 
-### 中文
+## Development and CI Status — 2026-11-21
 
-当前开发目标：在 2026-11-28 前完成 qmjyOS 0.1.0 的可验证发布版本。
+Current development phase: **Phase 3 — Runtime Integration and Hardening**.
 
-本轮新增 CI 检查范围：
+Phase 1 system-foundation work has been accepted. Phase 2 kernel-infrastructure foundations are in place. Phase 3 has an experimental ELF64 process-runtime path, but Phase 3 is not complete and qmjyOS 0.1.0 is not yet release-ready.
 
-- Shell 和 Python 源码语法检查。
-- QBuild 构建与配置检查。
-- 不支持的平台目标拒绝检查。
-- ELF32/ELF64 文件布局检查。
-- AddressSanitizer 和 UndefinedBehaviorSanitizer 主机测试。
-- QFS 主机测试及崩溃一致性测试。
-- x86_64 BIOS 环境下的 QEMU 启动测试。
+### Implemented foundations and limited evidence
 
-本地已确认通过：
+- x86_64 BIOS development bootstrap and initial x86_64 UEFI/OVMF path.
+- GDT/TSS/IDT, exception-entry, PIC/PIT/IRQ foundations.
+- Physical-page allocator, 4 KiB paging manager, and limited kernel-heap foundations.
+- ELF64 loader integrated with an experimental process runtime.
+- Private page-table root, USER/RW/NX user-stack validation, CR3 activation, and CPL3 entry.
+- Test syscall echo/return and exit path, followed by runtime-page reclamation.
+- Ring 0 two-task cooperative scheduling; this is not preemptive scheduling.
+- VFS/RAMFS foundations, QFS host tests, and QBuild 1.0.0 build/test entry points.
 
-- 源码语法检查。
-- x86_64 BIOS QBuild 完整构建。
-- ELF 布局检查。
-- QBuild 测试套件。
-- ASan/UBSan 主机测试。
-- git diff --check。
+Host tests do not prove hardware TLB behavior or complete isolation.
 
-注意：Termux 环境不支持 LeakSanitizer，因此本轮使用
-detect_leaks=0。AddressSanitizer 和 UBSan 测试通过，
-不代表内存泄漏检测已经通过。
+### Remaining work
 
-GitHub Actions Run #14：
+- Fault-safe user-copy and comprehensive user-exception recovery.
+- Concurrent independent user processes, per-task kernel stacks, and complete process/thread lifecycle.
+- Stable, documented production syscall ABI and authorization rules.
+- Preemptive scheduling and SMP.
+- Complete self-developed QBoot BIOS manager; UEFI hardening and compatibility work.
+- Persistent storage, complete driver ecosystem, desktop, installer, recovery, and full bilingual product experience.
+- Full security audit and broader hardware/firmware validation.
 
-- Commit: 32cee5272d22385c0ac3fca8fee81b5a556585cc
-- Run ID: 43826588727
-- URL: https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
-- 最后记录的状态：代码与 QBuild 验证 Job 已通过；
-  x86_64 BIOS 构建与 QEMU 测试 Job 当时仍在运行。
-- 最终状态必须以 GitHub Actions 实际结果为准。
+### GitHub Actions snapshot
 
-### English
+- Commit: `927eb3665cb2a9b83670749ed84e2555709ba255`
+- Workflow: [Run #19](https://github.com/qmjy592/qmjyOS/actions/runs/44794506369)
+- Code and QBuild validation: **PASS**.
+- x86_64 BIOS build and QEMU boot test: **PASS**.
+- x86_64 UEFI/OVMF job: **RUNNING at the time checked**.
 
-The current target is a verifiable qmjyOS 0.1.0 release
-by November 28, 2026.
+This is a dated snapshot, not a live status. Do not describe the complete workflow as green until the UEFI job completes.
 
-New CI coverage includes source syntax checks, QBuild
-validation, unsupported-target rejection, ELF layout
-verification, ASan/UBSan host tests, QFS tests, and
-x86_64 BIOS QEMU boot validation.
+### 中文：当前阶段与 CI 状态
 
-Local checks passed for source syntax, QBuild build,
-ELF layout, QBuild tests, ASan/UBSan host tests, and
-git diff --check.
+当前重点为**第三阶段：运行时集成与加固**。第一阶段系统骨架已验收，第二阶段内核基础设施已形成基础，第三阶段已经接通实验性的 ELF64 进程运行时路径，但尚未完成。
 
-LeakSanitizer is disabled on the current Termux
-environment. Memory leak detection is therefore
-not verified.
+已建立基础或有限验证的能力包括：x86_64 BIOS 开发引导、初步 UEFI/OVMF 路径、GDT/TSS/IDT、异常入口、PIC/PIT/IRQ、物理页分配器、4 KiB 分页、有限内核堆、ELF64 加载器、实验性进程运行时、私有页表根、用户栈权限检查、CR3 激活、CPL3 入口、测试 syscall、运行时页回收、Ring 0 协作式调度、VFS/RAMFS、QFS 测试和 QBuild 1.0.0。
 
-GitHub Actions Run #14:
-- Commit: 32cee5272d22385c0ac3fca8fee81b5a556585cc
-- Run ID: 43826588727
-- URL: https://github.com/qmjy592/qmjyOS/actions/runs/43826588727
+仍未完成的工作包括 fault-safe user-copy、全面用户异常恢复、多独立进程并发调度、每任务内核栈、完整进程/线程生命周期、生产级 syscall ABI、抢占式调度、SMP、完整 QBoot BIOS 管理器、UEFI 加固、持久化存储、完整驱动生态、桌面、安装器、恢复环境、完整双语体验和全面安全审计。
 
-The recorded status was partial success, not a confirmed
-complete CI pass. Check the live workflow result before
-claiming completion.
-
-### 0.1.0 Release Scope
-
-The intended release scope includes:
-
-- Kernel foundation and hardware initialization.
-- Self-developed QBoot boot manager.
-- Desktop environment and basic applications.
-- Installer and recovery environment.
-- Chinese and international English editions.
-
-A planned component must not be described as implemented.
-Every release component needs implementation evidence and
-acceptance tests. Update this document when its status changes.
+本次查询时，提交 `927eb3665cb2a9b83670749ed84e2555709ba255` 对应的 [GitHub Actions Run #19](https://github.com/qmjy592/qmjyOS/actions/runs/44794506369) 中，Code and QBuild validation 已通过，x86_64 BIOS build and QEMU boot test 已通过，UEFI/OVMF Job 仍在运行。因此不能将整个 workflow 标记为全绿。
 
 
 <!-- QBUILD-1.0.0-2026-11-16 -->

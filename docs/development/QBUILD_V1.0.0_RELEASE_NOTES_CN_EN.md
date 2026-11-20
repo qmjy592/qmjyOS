@@ -42,7 +42,7 @@ QBuild 1.0.0 将原有 QBuild v0.5.0 模块规划器和 Makefile 入口升级为
 git diff --check
 ```
 
-发布验收记录：项目实际 Termux 环境中的 QBuild 自测、模块依赖与配置检查、完整内核构建和测试均已通过；GitHub Actions 对应提交的两个 Job 也全部成功。
+发布验收记录：项目实际 Termux 环境中的 QBuild 自测、模块依赖与配置检查、完整内核构建和测试均已通过；该历史记录不代表当前提交的 GitHub Actions 状态。
 
 ## English
 
@@ -66,3 +66,8 @@ QBuild 1.0.0 upgrades the v0.5.0 module planner and Makefile frontend into a uni
 - QBuild's version is independent from the qmjyOS operating-system version.
 
 The code is a local validation candidate until target-Termux checks and the new GitHub Actions run pass. A local test pass must not be represented as a remote CI pass.
+
+
+## Current CI note — 2026-11-21
+
+GitHub Actions [Run #19](https://github.com/qmjy592/qmjyOS/actions/runs/44794506369) for commit `927eb3665cb2a9b83670749ed84e2555709ba255` was in progress when checked. Code/QBuild and BIOS build/QEMU passed; UEFI/OVMF was still running. This is a dated snapshot, not a live status.

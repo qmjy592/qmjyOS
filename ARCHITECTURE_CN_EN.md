@@ -366,3 +366,22 @@ release-ready QBoot products.
 
 Desktop components and applications remain planned until
 their implementation and acceptance tests are available.
+
+
+## Current Architecture Status — 2026-11-21
+
+### 中文：当前实现边界
+
+当前已有实验性 ELF64 进程运行时、私有页表根、用户栈权限检查、CR3 激活和 CPL3 入口，并具备测试 syscall 路径及运行时页回收。
+
+这不代表已经具备完整用户空间或安全沙箱。fault-safe user-copy、全面用户异常恢复、多独立用户进程并发调度、每任务内核栈、完整线程生命周期、抢占式调度、SMP 和生产级 syscall ABI 仍未完成。
+
+BIOS bootstrap 不等于完整 QBoot BIOS 管理器。UEFI 仍需兼容性与安全加固。持久化存储、完整驱动生态、桌面、安装器、恢复环境和全面安全审计仍是后续工作。
+
+### English: Current implementation boundaries
+
+The experimental ELF64 process runtime has a private page-table root, user-stack permission checks, CR3 activation, CPL3 entry, test syscall paths, and runtime-page reclamation.
+
+This is not a complete userspace or secure sandbox. Fault-safe user copies, comprehensive user-fault recovery, concurrent independent processes, per-task kernel stacks, full thread lifecycle, preemption, SMP, and a production syscall ABI remain incomplete.
+
+The BIOS bootstrap is not a complete QBoot BIOS manager. UEFI hardening, persistent storage, the complete driver ecosystem, desktop, installer, recovery environment, and full security audit remain outstanding.
