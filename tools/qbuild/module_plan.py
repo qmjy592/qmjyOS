@@ -57,12 +57,15 @@ SOURCES_64 = {
     "PROCESS": [
         ("exec/elf/elf64.c", "exec/elf/elf64.o"),
         ("kernel/core/process.c", "kernel/core/process.o"),
+        ("kernel/core/process_runtime.c", "kernel/core/process_runtime.o"),
+        ("kernel/core/user_access.c", "kernel/core/user_access.o"),
     ],
     "SCHEDULER": [
         ("sched/core/task.c", "sched/core/task.o"),
     ],
     "SYSCALL": [
         ("kernel/syscall/syscall.c", "kernel/syscall/syscall.o"),
+        ("kernel/syscall/x86_64_abi.c", "kernel/syscall/x86_64_abi.o"),
     ],
     "FS_VFS": [
         ("fs/vfs/vfs.c", "fs/vfs/vfs.o"),

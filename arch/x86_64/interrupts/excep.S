@@ -1,6 +1,7 @@
 .section .text
 .code64
 .extern exception_handler
+.extern ring3_resume_kernel
 
 .macro ISR_NOERR num
 .global isr\num
@@ -1176,16 +1177,15 @@ isr_common:
     push %r13
     push %r14
     push %r15
-    mov 120(%rsp), %rdi
-    mov 128(%rsp), %rsi
-    mov 136(%rsp), %rdx
-    mov 144(%rsp), %rcx
-    mov 152(%rsp), %r8
     mov %rsp, %r12
+    mov %rsp, %rdi
     andq $-16, %rsp
     cld
     call exception_handler
     mov %r12, %rsp
+    movabsq $0x8000000000000000, %rdx
+    cmpq %rdx, %rax
+    je ring3_resume_kernel
 1:  cli
     hlt
     jmp 1b

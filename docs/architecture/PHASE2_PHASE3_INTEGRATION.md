@@ -13,7 +13,7 @@ It builds on the already-applied Foundation, MM_HEAP, BIOS NXE, QFS/MBR, QBuild 
 1. A bounded Multiboot v1 adapter constructs the versioned `qm_boot_info_t` record from the existing BIOS bootstrap handoff. It validates the memory map records, range arithmetic, overlaps, capacity and unsupported loaded modules. The resulting memory-map array is kept in kernel storage whose physical address is passed explicitly.
 2. `arch/x86_64/boot/entry64.S` installs an early exception IDT after `.bss` clearing and before calling `main`. Its selector is explicitly `0x08`, matching the actual Multiboot bootstrap GDT and the kernel GDT; no obsolete `0x18` assumption is made. The exception stub passes vector, error code, RIP, CS and RFLAGS using the x86_64 SysV argument registers. The panic reporter writes to debugcon first and only mirrors to COM1 after `serial_init`.
 3. `kernel/core/main.c` registers ordered callbacks with the existing namespaced kernel init registry. Boot diagnostics, GDT/TSS/IDT/PIC/PIT, physical memory, bounded heap, paging self-test, VFS/RAMFS, syscall registration and QFS storage setup are now invoked through ordered init levels.
-4. The Ring 3 test exit request is routed through `qm_syscall_dispatch()` instead of bypassing the generic syscall table. The sole registered number remains a test-only exit request; it is not a production process-exit ABI.
+4. At this package snapshot, Ring 3 exit was routed through `qm_syscall_dispatch()`; the later 2026-11-21 runtime adds test echo/exit dispatch and private address-space activation (see the update section below).
 
 ## Phase 3 foundations added here
 
@@ -28,12 +28,12 @@ This is a meaningful integration tranche, not a claim that the whole OS is compl
 - The BIOS bootstrap still uses Multiboot v1. The adapter creates Boot Info inside the kernel; the future QBoot manager must construct and pass Boot Info directly according to the final handoff contract.
 - The current adapter rejects Multiboot modules. Command-line, ACPI, framebuffer and firmware system-table records are not populated yet.
 - The adapter constructs and validates `qm_boot_info_t`, but the current PMM callback still calls the legacy `mm_init_from_multiboot()` parser. A PMM API that consumes the normalized Boot Info memory-region array is not claimed in this tranche.
-- The ELF loader needs an address-space backend. The callback interface is the boundary; it is not yet connected to a per-process CR3 root or a user stack builder.
-- The process registry owns metadata only. It does not switch to a process, allocate an independent page-table root, or implement process/thread scheduling.
+- At this package snapshot, the ELF loader still needed a process address-space backend; the 2026-11-21 runtime update connects the loader to a private address-space root, user stack setup, CR3 activation and CPL3 entry.
+- At this package snapshot, the process registry owned metadata only. The later runtime adds a bounded process runtime and page reclaim, but does not yet provide concurrent multi-process scheduling or complete process/thread management.
 - `THREAD` and preemptive scheduling remain planned. The existing scheduler remains two fixed cooperative Ring 0 tasks.
-- The generic syscall dispatcher is integrated only for the Ring 3 test-exit syscall. User-pointer copy/validation, full register-argument ABI, per-process authorization and recoverable user faults remain future work.
+- The later runtime registers test echo and exit handlers and validates syscall trap-frame register mapping. User pointer prevalidation exists, but direct copy remains not fault-safe; production ABI, per-process authorization and complete user fault recovery remain future work.
 - IPC, capability and service components remain separately built host-tested foundations; they are not yet launched as user processes.
-- `RUNTIME`, `SYSTEM_SERVICES`, `QSHELL`, applications, complete init service launch, and QBoot UEFI/AArch64 remain incomplete.
+- `RUNTIME`, `SYSTEM_SERVICES`, `QSHELL`, applications and complete init service launch remain incomplete. Initial x86_64 UEFI is build/OVMF-tested in CI but is not release-ready; AArch64 remains unsupported.
 - QFS journal/intent log and crash replay recovery remain outstanding.
 
 ## Verification plan
@@ -130,3 +130,24 @@ A successful build alone does not prove power-loss safety.
 The expanded CI includes source syntax, ELF layout,
 unsupported target rejection, ASan/UBSan, QFS, and QEMU.
 The final Run #14 result must be verified independently.
+
+## Phase 3 runtime integration update — 2026-11-21
+
+This section supersedes the earlier Phase 3 boundary statements above where they say that a per-process CR3/user stack/runtime path is not connected. The earlier text remains as a historical description of the integration package at that time.
+
+### Implemented path
+
+- ELF64 loader core is integrated with the process runtime.
+- A private address-space root is created and the user stack is mapped with USER/RW/NX permissions.
+- Runtime checks the stack mapping and activates the process CR3 before entering CPL3.
+- `int 0x80` syscall entry uses the x86_64 trap frame; test handlers include echo/return and process exit.
+- Exit restores the kernel context and reclaims runtime pages.
+- Scheduler address-space/CR3 switching has host regression coverage.
+
+### Latest evidence and boundaries
+
+The user reported the QEMU BIOS serial output passing these markers on Termux: `Private PML4 and USER/RW/NX stack: ready`, `Private CR3 activated. Entering CPL3`, `ELF process exit and page reclamation: PASS`, and `Basic privilege transition: PASS`. The raw log was not present in the uploaded review snapshot, so this is user-reported runtime evidence rather than independently replayed evidence in this review container.
+
+Host regression targets include `test-process-runtime`, `test-scheduler-aspace`, and `test-syscall-x86_64-abi`. They do not prove hardware TLB behavior, safe recovery from arbitrary user faults, concurrent process scheduling, or production syscall semantics. User-copy validation currently preflights mappings and then directly copies; complete fault-safe copy recovery is still outstanding.
+
+Remaining Phase 3 work includes fault-safe user copy, broader user exception recovery, process concurrency, per-task kernel stack/context integration, preemptive scheduling, syscall authorization and ABI stabilization, and security review.

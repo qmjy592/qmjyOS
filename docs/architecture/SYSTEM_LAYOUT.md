@@ -77,3 +77,7 @@ A directory is only a structural boundary.
 
 A subsystem is implemented only when source code, integration,
 build coverage and relevant tests support that status.
+
+## Host test artifact policy
+
+Host-side test executables are generated under `build/tests/` and must not be checked in. This avoids accidentally running Android/Termux ARM64 binaries on x86_64 CI runners. Use `make clean-host-test-artifacts` to remove host test executables before a fresh test run.

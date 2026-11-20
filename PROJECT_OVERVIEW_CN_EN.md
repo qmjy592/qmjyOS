@@ -28,14 +28,14 @@ The project's central purpose is to study and validate fundamental operating-sys
 4. **Manage physical memory.** Parse Multiboot memory-map entries and allocate/free page-aligned physical frames while respecting reserved regions.
    **管理物理内存。** 解析 Multiboot 内存映射，在尊重保留区域的前提下分配和释放按页对齐的物理页框。
 
-5. **Develop virtual-memory primitives.** Build, inspect and activate 4 KiB page tables; validate user/kernel mapping permissions in the Ring 3 test.
-   **开发虚拟内存基础操作。** 构建、检查并激活 4 KiB 页表；通过 Ring 3 测试验证用户映射和内核映射权限。
+5. **Develop virtual-memory primitives.** Build, inspect and activate 4 KiB page tables; the Phase 3 runtime uses a private address-space root and checks user/kernel mapping permissions.
+   **开发虚拟内存基础操作。** 构建、检查并激活 4 KiB 页表；Phase 3 运行时使用独立地址空间根并检查用户/内核映射权限。
 
 6. **Preserve a Ring 0 multitasking baseline.** Demonstrate cooperative context switching between two kernel tasks.
    **保留 Ring 0 多任务基线。** 演示两个内核任务之间的协作式上下文切换。
 
-7. **Prepare for privilege separation.** Keep GDT/TSS and page-permission work moving toward Ring 3, without claiming user mode is ready before the address-space design is validated.
-   **为特权级隔离做准备。** 推进 GDT/TSS 和页权限工作，为 Ring 3 做准备，但在地址空间设计验证前不宣称用户态已经可用。
+7. **Privilege separation foundation.** GDT/TSS, user-page permission checks, private address-space activation and CPL3 entry are integrated for the test runtime; complete process isolation remains future work.
+   **特权级隔离基础。** GDT/TSS、用户页权限检查、独立地址空间激活及 CPL3 入口已接入测试运行时；完整进程隔离仍是后续工作。
 
 ## 3. Design principles / 设计原则
 
@@ -45,8 +45,8 @@ The project's central purpose is to study and validate fundamental operating-sys
 - **C plus assembly:** C implements most policy and data structures; assembly handles processor entry, interrupt frames, mode-sensitive operations, and context switching.
   **C 与汇编协作：** C 负责大部分策略和数据结构；汇编负责处理器入口、中断栈帧、对运行模式敏感的操作和上下文切换。
 
-- **Explicit boundaries:** boot-time mappings, inactive page tables, cooperative scheduling, and future user mode are documented as separate capabilities.
-  **边界明确：** 引导期映射、未激活页表、协作式调度和未来用户态被视为不同能力，分别说明。
+- **Explicit boundaries:** boot-time mappings, inactive page-table construction, the active Phase 3 test user-mode runtime, and cooperative scheduling are documented as separate capabilities.
+  **边界明确：** 引导期映射、未激活页表构建、已接入的 Phase 3 测试用户态运行时和协作式调度被视为不同能力，分别说明。
 
 - **Incremental validation:** build success, host tests, QEMU boot, interrupt activity, and privilege-transition tests are different levels of evidence.
   **逐步验证：** 编译成功、主机测试、QEMU 启动、中断活动和特权级切换测试属于不同层级的证据。
@@ -79,8 +79,8 @@ The project's central purpose is to study and validate fundamental operating-sys
 - `arch/x86_64/gdt/gdt_load.S`: loads the GDTR and performs a far return to reload CS.
   `arch/x86_64/gdt/gdt_load.S`：加载 GDTR，并通过远返回刷新 CS。
 
-- `kernel/core/main.c`: initializes physical memory and paging tests, PIC, IDT, PIT and GDT/TSS; runs the basic Ring 3 address-space and syscall test; then starts the cooperative Ring 0 scheduler.
-  `kernel/core/main.c`：初始化物理内存和分页测试、PIC、IDT、PIT 与 GDT/TSS；执行基础 Ring 3 地址空间和系统调用测试；随后启动 Ring 0 协作式调度器。
+- `kernel/core/main.c`: initializes physical memory/paging, interrupt infrastructure and GDT/TSS; runs the ELF process-runtime Ring 3 test including echo/exit and reclamation; then starts the cooperative Ring 0 scheduler.
+  `kernel/core/main.c`：初始化物理内存/分页、 中断基础设施及 GDT/TSS；执行 ELF 进程运行时 Ring 3 测试（echo/exit 和回收）；随后启动 Ring 0 协作式调度器。
 
 - `arch/x86_64/idt/idt.c`: constructs the 256-entry IDT and associates vectors with entry stubs.
   `arch/x86_64/idt/idt.c`：构造 256 项 IDT，并将向量关联到入口桩。
@@ -114,9 +114,9 @@ The project's central purpose is to study and validate fundamental operating-sys
 
 ## 6. Runtime flow / 运行流程概览
 
-The processor begins at the Multiboot 32-bit entry. The bootstrap copies the embedded 64-bit binary to its linked physical address, constructs initial identity mappings, enables long mode and paging, and transfers control to `_start64`. The 64-bit entry establishes its stack, clears BSS, and calls `main`. The C main path initializes the physical allocator and paging manager, configures interrupt infrastructure and GDT/TSS, then runs the Ring 3 test. The test maps user code as read-only/executable and the user stack as writable/NX, keeps the kernel identity mapping supervisor-only, activates CR3, enters CPL3 and invokes the test syscall through vector 0x80. The syscall handler restores the saved Ring 0 continuation. The kernel then starts the cooperative scheduler. Tasks yield explicitly through `task_yield`; the timer interrupt only increments the tick counter.
+The BIOS processor path begins at the Multiboot 32-bit entry. The bootstrap copies the embedded 64-bit binary, establishes initial mappings, enables long mode and paging, and transfers control to `_start64`. The 64-bit entry sets up the stack, clears BSS and calls `main`. The main path initializes physical memory/paging, interrupt infrastructure and GDT/TSS, registers test syscall handlers, then runs the ELF process runtime: private page-table root, USER/RW/NX stack, CR3 activation, CPL3 echo/exit probe and page reclamation. After the test exits, the kernel starts the cooperative Ring 0 scheduler. Tasks yield explicitly; timer interrupts do not preemptively switch task contexts.
 
-处理器从 Multiboot 32 位入口开始。引导代码把嵌入的 64 位二进制复制到链接指定的物理地址，建立初始恒等映射，开启长模式和分页，然后转交 `_start64`。64 位入口建立栈、清零 BSS 并调用 `main`。C 主流程初始化物理页分配器和分页管理器，配置中断基础设施及 GDT/TSS，然后执行 Ring 3 测试。测试将用户代码映射为只读可执行页，将用户栈映射为可写且不可执行页，保持内核恒等映射为 supervisor-only，激活 CR3，进入 CPL3 并通过向量 0x80 调用测试系统调用。系统调用处理程序恢复保存的 Ring 0 执行现场。随后内核启动协作式调度器。任务通过 `task_yield` 显式让出 CPU；定时器中断目前只增加 tick 计数。
+BIOS 路径从 Multiboot 32 位入口开始。引导代码复制嵌入的 64 位映像，建立初始映射，开启长模式和分页后进入 `_start64`。64 位入口设置栈、清零 BSS 并调用 `main`。主流程初始化物理内存/分页、中断和 GDT/TSS，注册测试 syscall，再运行 ELF 进程运行时：独立页表根、USER/RW/NX 用户栈、CR3 激活、CPL3 echo/exit 测试及页面回收。测试退出后启动 Ring 0 协作式调度器。任务显式让出 CPU；定时器不会抢占式切换任务。
 
 ## 7. Roadmap / 后续路线
 
@@ -160,7 +160,7 @@ qmjyOS 当前还不是通用操作系统、安全沙箱、虚拟机监控程序�
 - RAMFS/VFS 基础组件。
 - 基础 Ring 3 特权级转换测试。
 - Ring 0 协作式双任务调度测试。
-- QBuild v0.5.0 构建与测试流程。
+- QBuild 1.0.0 构建/测试入口；CI 覆盖 x86_64 BIOS 和初步 UEFI。
 
 功能边界：
 
@@ -168,10 +168,8 @@ qmjyOS 当前还不是通用操作系统、安全沙箱、虚拟机监控程序�
 2. 当前进程模块的 metadata registry 不等于完整进程管理器。
 3. 当前 Ring 3 测试不等于完整用户地址空间隔离。
 4. ELF64 加载相关代码不等于完整、独立的进程地址空间。
-5. 当前 BIOS 启动链仍属于开发阶段 bootstrap，
-   不能等同于完整 QBoot 产品。
-6. QBuild 已具备模块和构建管理能力，但底层仍依赖
-   Makefile 构建流程。
+5. BIOS 启动链仍属于开发阶段 bootstrap；UEFI 已有初步 CI 测试实现，但尚未达到发布级。
+6. QBuild 已具备模块和构建管理能力，但底层仍依赖 Makefile。
 
 ### CI 状态
 
@@ -196,7 +194,7 @@ The current verified development baseline includes:
 - Basic RAMFS/VFS components.
 - A basic Ring 3 privilege-transition test.
 - A cooperative Ring 0 two-task scheduler test.
-- QBuild v0.5.0 build and test workflows.
+- QBuild 1.0.0 build/test frontend; CI covers x86_64 BIOS and initial UEFI.
 
 Important limitations:
 
@@ -204,8 +202,7 @@ Important limitations:
 2. The process metadata registry is not a complete process manager.
 3. The Ring 3 test does not prove complete user-space isolation.
 4. ELF64 loading support does not prove independent process address spaces.
-5. The current BIOS boot path is a development bootstrap,
-   not a completed QBoot product.
+5. The BIOS boot path remains a development bootstrap; UEFI has an initial CI-tested implementation but is not release-ready.
 6. QBuild still relies on Makefile-based underlying build rules.
 
 Local checks passed for source syntax, QBuild build, ELF layout,
@@ -213,3 +210,35 @@ QBuild tests, ASan/UBSan host tests, and git diff validation.
 
 LeakSanitizer is unsupported in the current Termux environment.
 The final status of CI Run #14 must be checked separately.
+
+## Development Status Update — 2026-11-21 (Phase 3 runtime)
+
+### 中文
+
+本次阶段进展以本节为准，覆盖旧的 Phase 2/3 “尚未连接独立地址空间”描述：
+
+- ELF64 → process runtime 的集成路径已建立。
+- 用户地址空间使用独立页表根；内核映射仍需按当前映射策略保持 Supervisor 权限。
+- 用户栈页检查为 USER/RW/NX。
+- 运行路径激活私有 CR3，并进入 CPL3。
+- 测试系统调用包含 echo 往返和 exit 路径；退出后释放运行时页。
+- 用户在 Termux 上报告实际 QEMU BIOS 串口标志通过。原始串口文件未包含在本次审查压缩包中。
+- 新增主机回归测试：ELF process runtime、scheduler/address-space CR3、x86_64 syscall trap-frame ABI。
+
+仍未宣称完成：多用户进程并发调度、生产级 syscall ABI、完整 fault-safe user-copy、用户异常全面恢复、抢占式调度、SMP、安全审计。
+
+### English
+
+This status supersedes earlier Phase 2/3 statements that the private address-space runtime was not yet connected. Detailed acceptance evidence and limitations are recorded in [Phase 3 Runtime Validation](docs/development/PHASE3_RUNTIME_VALIDATION_2026-11-21.md).
+
+- ELF64-to-process runtime integration is present.
+- The user process receives a private page-table root; shared kernel mappings remain supervisor-only by design.
+- The user stack is checked as USER/RW/NX.
+- The private CR3 is activated before CPL3 entry.
+- The smoke-test syscalls cover echo/return and exit; runtime pages are reclaimed after exit.
+- The user reported a QEMU BIOS run passing the runtime serial markers. The raw serial log was not included in the review archive.
+- Host regression targets cover process runtime, scheduler/address-space CR3 behavior, and the x86_64 syscall trap-frame ABI.
+
+This does not establish concurrent multi-process scheduling, a production syscall ABI, fault-safe user copies, complete user exception recovery, preemption, SMP, or a security audit.
+
+CI builds x86_64 BIOS and UEFI paths. AArch64 remains unsupported.

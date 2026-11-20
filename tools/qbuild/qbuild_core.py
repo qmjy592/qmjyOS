@@ -23,7 +23,8 @@ SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 DEFAULT_TEST_TARGETS = (
     "test-qbuild", "test-memory", "test-paging", "test-heap", "test-vfs", "test-ramfs",
     "test-qfs", "test-interfaces", "test-kernel-foundation", "test-elf64",
-    "test-process", "test-services",
+    "test-process", "test-process-runtime", "test-scheduler-aspace",
+    "test-syscall-x86_64-abi", "test-services",
 )
 
 

@@ -1,4 +1,6 @@
 #include "serial.h"
+#include "qmjy/process_runtime.h"
+#include "qmjy/x86_64_trap.h"
 #include <stdint.h>
 
 static const char *exception_messages[] = {
@@ -38,21 +40,36 @@ static void panic_hex(uint64_t value)
         panic_putc(digits[(value >> (60U - i * 4U)) & 0x0FU]);
 }
 
-void exception_handler(uint64_t int_no, uint64_t err_code,
-                       uint64_t rip, uint64_t cs, uint64_t rflags)
+qm_u64_t exception_handler(const qm_x86_64_trap_frame_t *frame)
 {
     uint64_t cr2 = 0;
+    if (frame == NULL)
+        goto kernel_panic;
+
+    /* A CPL3 exception belongs to the current user process, not the kernel. */
+    if ((frame->cs & 3U) == 3U) {
+        qm_s32_t exit_code = (qm_s32_t)(-128 - (qm_s32_t)frame->vector);
+        if (qm_process_runtime_exit_current(exit_code) == QM_OK) {
+            panic_puts("\n[Ring 3] User process faulted; isolated process terminated.\n");
+            return QM_X86_64_TRAP_EXIT_TO_KERNEL;
+        }
+        panic_puts("\n[Ring 3] User exception could not be contained.\n");
+    }
+
+kernel_panic:
     panic_puts("\n\n!!! KERNEL PANIC !!!\nException: ");
-    if (int_no < 32)
-        panic_puts(exception_messages[int_no]);
+    if (frame != NULL && frame->vector < 32)
+        panic_puts(exception_messages[frame->vector]);
     else
         panic_puts("Unknown");
-    panic_puts("\nVector: ");     panic_hex(int_no);
-    panic_puts("\nError Code: "); panic_hex(err_code);
-    panic_puts("\nRIP: ");        panic_hex(rip);
-    panic_puts("\nCS: ");         panic_hex(cs);
-    panic_puts("\nRFLAGS: ");     panic_hex(rflags);
-    if (int_no == 14) {
+    if (frame != NULL) {
+        panic_puts("\nVector: ");     panic_hex(frame->vector);
+        panic_puts("\nError Code: "); panic_hex(frame->error_code);
+        panic_puts("\nRIP: ");        panic_hex(frame->rip);
+        panic_puts("\nCS: ");         panic_hex(frame->cs);
+        panic_puts("\nRFLAGS: ");     panic_hex(frame->rflags);
+    }
+    if (frame != NULL && frame->vector == 14) {
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         panic_puts("\nCR2: ");
         panic_hex(cr2);

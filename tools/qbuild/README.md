@@ -2,13 +2,13 @@
 
 qmjyOS 统一构建与工程管理入口。QBuild 1.0.0 在保留 v0.5.0 命令和 Makefile 执行基础的同时，增加安全模块配置管理、可校验配置快照、可追溯构建/测试报告、环境诊断和自身回归测试。
 
-QBuild 版本与 qmjyOS 操作系统版本独立。QBuild 1.0.0 不代表 qmjyOS 已发布 1.0.0；当前内核支持目标仍是 x86_64 + BIOS。
+QBuild 版本与 qmjyOS 操作系统版本独立。QBuild 1.0.0 不代表 qmjyOS 已发布 1.0.0；当前 CI 覆盖 x86_64 + BIOS 与 x86_64 + UEFI；UEFI 属于初步实现，AArch64 仍不支持。
 
 ## 要求与边界
 
 - Python 3.10+、Make、Clang、LLD 和 llvm-objcopy。
-- 当前支持：`x86_64 + bios`。
-- `x86_64 + uefi` 与 `aarch64` 仍明确拒绝。
+- CI 当前覆盖：`x86_64 + bios` 与初步 `x86_64 + uefi`。
+- `aarch64 + bios/uefi` 仍明确拒绝。
 - Makefile 继续执行实际编译、链接和原有测试目标。
 - 不提供动态内核模块加载器，也不宣称 QTest 运行时已完成。
 - 模块成熟度仍由 `config/modules.status` 的 `planned`、`experimental`、`implemented` 表示；QBuild 不会因构建成功自动提升模块状态。
@@ -84,3 +84,12 @@ QBuild 版本与 qmjyOS 操作系统版本独立。QBuild 1.0.0 不代表 qmjyOS
 ## 1.0.0 发布门槛
 
 QBuild 代码版本设为 1.0.0；正式对外发布仍须在目标 Termux 环境完成 `doctor`、`self-test`、完整 `build`、完整 `test`、快照/恢复操作验收、`git diff --check`，并确认新提交的 GitHub Actions CI 全部通过。不能把本地 PASS 写成 GitHub CI PASS。
+
+## CI runtime coverage (2026-11-21)
+
+- BIOS: full build, host suite, static boot checks, QBoot BIOS disk boot/QEMU serial checks, and QFS IDE runtime tests.
+- UEFI: EFI application/kernel build, ELF/PE inspection, and OVMF QEMU runtime checks.
+- Host tests: QBuild self-tests, memory/paging/heap, VFS/RAMFS/QFS, interfaces, kernel foundation, ELF64, process metadata/runtime, scheduler address-space and syscall ABI.
+- AArch64: configuration rejection tests; no supported build/runtime target yet.
+
+CI must build host-test executables on the runner instead of executing checked-in host binaries. Test executables are generated under `build/tests/host/`; legacy root-level test binaries are cleaned by `clean-host-test-artifacts`.

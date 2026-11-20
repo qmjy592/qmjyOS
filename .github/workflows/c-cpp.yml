@@ -136,6 +136,10 @@ jobs:
         run: |
           bash tools/ci/verify_elf_layout.sh
 
+      - name: Remove stale host-test executables
+        run: |
+          make clean-host-test-artifacts
+
       - name: Run complete QBuild test suite
         run: |
           sh tools/qbuild/qbuild test \
@@ -210,6 +214,10 @@ jobs:
           file build/qboot-uefi/esp/EFI/BOOT/BOOTX64.EFI
           llvm-readobj --file-headers build/qboot-uefi/esp/EFI/BOOT/BOOTX64.EFI
           llvm-readobj --file-headers --program-headers kernel64-uefi.elf
+
+      - name: Remove stale host-test executables
+        run: |
+          make clean-host-test-artifacts
 
       - name: Run UEFI OVMF runtime tests
         run: |

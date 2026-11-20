@@ -1,7 +1,9 @@
 # QBuild 1.0.0 — Release Notes / 发布说明
 
 **Version:** 1.0.0
-**Release state:** Termux validation and GitHub Actions CI passed. The public release is pending tag and release publication.
+**Release state at 2026-11-16:** Termux validation and GitHub Actions CI passed. The public release was pending tag and release publication.
+
+**Status superseded on 2026-11-21:** QBuild now accepts x86_64 + BIOS and x86_64 + UEFI; initial UEFI build and OVMF runtime tests are part of CI. AArch64 remains rejected. See the current QBuild guide for the live status.
 
 ## 中文
 
@@ -21,7 +23,7 @@ QBuild 1.0.0 将原有 QBuild v0.5.0 模块规划器和 Makefile 入口升级为
 
 - 原有 `info`、`config`、`modules`、`deps`、`plan`、`build`、`test`、`clean` 命令保留。
 - Makefile 仍然负责真实的编译、链接和内核测试。
-- 当前只支持 x86_64 + BIOS；UEFI/AArch64 仍明确拒绝。
+- 当时记录的支持矩阵为 x86_64 + BIOS；该历史状态已被 2026-11-21 更新覆盖。当前 UEFI 初步 CI 路径已加入，AArch64 仍明确拒绝。
 - 不包含动态内核模块加载器，不代表 QTest 框架、整个 OS 或任何内核子系统已达到生产级成熟度。
 - QBuild 版本与 qmjyOS 系统版本独立。
 
@@ -59,7 +61,7 @@ QBuild 1.0.0 upgrades the v0.5.0 module planner and Makefile frontend into a uni
 
 - Existing core commands remain available.
 - Makefile remains the actual compiler, linker and kernel-test execution layer.
-- Only x86_64 + BIOS is supported; UEFI and AArch64 remain unsupported.
+- The x86_64 + BIOS-only statement is historical and superseded by the 2026-11-21 CI update; initial x86_64 UEFI coverage is now included. AArch64 remains unsupported.
 - No dynamic kernel module loader or completed QTest runtime is claimed.
 - QBuild's version is independent from the qmjyOS operating-system version.
 

@@ -1,9 +1,9 @@
 #include "paging.h"
 
-static int vm_active;
+static uint64_t *active_root;
 
-
-#define VM_TABLE_COUNT 64U
+#define VM_TABLE_COUNT 256U
+#define VM_ASPACE_MAGIC 0x41535043U
 #define VM_ENTRIES 512U
 #define VM_LARGE_PAGE (1ULL << 7)
 #define VM_LARGE_SIZE (1ULL << 21)
@@ -85,10 +85,36 @@ static uint64_t *entry_table(uint64_t entry) {
     uint64_t address = entry & VM_ADDR_MASK;
     for (size_t i = 0; i < VM_TABLE_COUNT; ++i) {
         if (table_in_use[i] &&
-            (uint64_t)(uintptr_t)table_pool[i] == address)
+            ((uint64_t)(uintptr_t)table_pool[i] & VM_ADDR_MASK) == address)
             return table_pool[i];
     }
     return 0;
+}
+
+static uint64_t *table_from_physical(uint64_t physical)
+{
+    if ((physical & (VM_PAGE_SIZE - 1U)) != 0)
+        return 0;
+    return entry_table(physical);
+}
+
+static int address_space_root(const vm_address_space_t *space,
+                              uint64_t **out_root)
+{
+    uint64_t *root;
+    uint64_t *pdpt;
+
+    if (space == 0 || out_root == 0 ||
+        space->magic != VM_ASPACE_MAGIC || space->reserved != 0)
+        return VM_ERR_ARGUMENT;
+    root = table_from_physical(space->root_physical);
+    pdpt = table_from_physical(space->pdpt_physical);
+    if (root == 0 || pdpt == 0 ||
+        (root[0] & VM_ADDR_MASK) !=
+            (space->pdpt_physical & VM_ADDR_MASK))
+        return VM_ERR_CORRUPT;
+    *out_root = root;
+    return VM_OK;
 }
 
 static int record_created(struct walk_path *path, uint64_t *parent,
@@ -161,15 +187,17 @@ static int split_large_page(uint64_t *parent, unsigned int index,
     return VM_OK;
 }
 
-static int walk(uint64_t va, int create, uint64_t flags,
+static int walk(uint64_t *root, uint64_t va, int create, uint64_t flags,
                 struct walk_path *path, uint64_t **leaf_entry) {
     static const unsigned int shifts[3] = {39, 30, 21};
-    uint64_t *table = root_table;
+    uint64_t *table = root;
 
+    if (root == 0 || path == 0 || leaf_entry == 0)
+        return VM_ERR_ARGUMENT;
     path->created_count = 0;
     path->promoted_count = 0;
     path->large_leaf = 0;
-    path->tables[0] = root_table;
+    path->tables[0] = root;
 
     for (size_t level = 0; level < 3; ++level) {
         unsigned int index = page_index(va, shifts[level]);
@@ -223,7 +251,7 @@ int vm_init(void) {
      * Never destroy page tables while CR3 may still reference them.
      * A reboot or a dedicated deactivation path is required first.
      */
-    if (vm_active)
+    if (active_root != 0)
         return VM_ERR_ACTIVE;
 
     for (size_t i = 0; i < VM_TABLE_COUNT; ++i) {
@@ -232,6 +260,7 @@ int vm_init(void) {
     }
     tables_used = 0;
     root_table = 0;
+    active_root = 0;
 
     uint64_t *root = allocate_table();
     uint64_t *pdpt = allocate_table();
@@ -267,7 +296,14 @@ int vm_map_page(uint64_t va, uint64_t pa, uint64_t flags) {
     if (!is_valid_physical_page(pa)) return VM_ERR_ADDRESS;
     if (flags & ~VM_LEAF_FLAG_MASK) return VM_ERR_FLAGS;
 
-    int status = walk(va, 1, flags, &path, &pte);
+    /* VM_USER_WX_GLOBAL_GUARD: user mappings must be W^X and non-global. */
+    if ((flags & (VM_USER | VM_WRITE)) == (VM_USER | VM_WRITE) &&
+        !(flags & VM_NO_EXECUTE))
+        return VM_ERR_FLAGS;
+    if ((flags & (VM_USER | VM_GLOBAL)) == (VM_USER | VM_GLOBAL))
+        return VM_ERR_FLAGS;
+
+    int status = walk(root_table, va, 1, flags, &path, &pte);
     if (status != VM_OK) {
         rollback_created(&path);
         return status;
@@ -282,7 +318,7 @@ int vm_map_page(uint64_t va, uint64_t pa, uint64_t flags) {
      * If this address was cached as non-present, or had an older
      * translation, discard that translation after changing the PTE.
      */
-    if (vm_active) {
+    if (active_root == root_table) {
         status = vm_invalidate_page(va);
         if (status != VM_OK)
             return status;
@@ -302,7 +338,7 @@ int vm_unmap_page(uint64_t va) {
      * create=1 deliberately splits a 2 MiB mapping when unmapping one 4 KiB
      * page from it. Any newly-created empty path is rolled back on failure.
      */
-    int status = walk(va, 1, 0, &path, &pte);
+    int status = walk(root_table, va, 1, 0, &path, &pte);
     if (status != VM_OK) {
         rollback_created(&path);
         return status;
@@ -322,7 +358,7 @@ int vm_unmap_page(uint64_t va) {
         release_table(child);
     }
 
-    if (vm_active) {
+    if (active_root == root_table) {
         status = vm_invalidate_page(va);
         if (status != VM_OK)
             return status;
@@ -337,7 +373,7 @@ int vm_query_page(uint64_t va, uint64_t *pa, uint64_t *flags) {
     if (!root_table || !pa || !flags) return VM_ERR_ARGUMENT;
     if (!is_low_canonical(va)) return VM_ERR_ADDRESS;
 
-    int status = walk(va, 0, 0, &path, &entry_ptr);
+    int status = walk(root_table, va, 0, 0, &path, &entry_ptr);
     if (status != VM_OK) return status;
 
     uint64_t entry = *entry_ptr;
@@ -414,17 +450,27 @@ int vm_self_test(void) {
         return -18;
     if (queried_pa != test_pa || (queried_flags & VM_USER)) return -19;
 
+    /* VM_USER_WX_SELFTEST: reject writable+executable user pages. */
     if (vm_map_page(0x0000000040100000ULL, 0x0000000030100000ULL,
-                    VM_USER | VM_WRITE) != VM_OK) return -20;
+                    VM_USER | VM_WRITE) != VM_ERR_FLAGS) return -45;
+    /* User mappings must never survive a CR3 switch as global TLB entries. */
+    if (vm_map_page(0x0000000040100000ULL, 0x0000000030100000ULL,
+                    VM_USER | VM_NO_EXECUTE | VM_GLOBAL) != VM_ERR_FLAGS)
+        return -46;
+    if (vm_map_page(0x0000000040100000ULL, 0x0000000030100000ULL,
+                    VM_USER | VM_WRITE | VM_NO_EXECUTE) != VM_OK) return -20;
     if (vm_query_page(0x0000000040100000ULL,
                       &queried_pa, &queried_flags) != VM_OK) return -21;
     if (!(queried_flags & VM_USER)) return -22;
+    if (!(queried_flags & VM_NO_EXECUTE)) return -47;
     if (vm_query_page(test_va, &queried_pa, &queried_flags) != VM_OK ||
         (queried_flags & VM_USER)) return -23;
 
     /* Split one supervisor 2 MiB page, then grant USER to one 4 KiB PTE. */
     if (vm_unmap_page(split_va) != VM_OK) return -24;
-    if (vm_map_page(split_va, split_pa, VM_USER | VM_WRITE) != VM_OK)
+    /* VM_USER_NX_SELFTEST_MIGRATION_20261121 */
+    if (vm_map_page(split_va, split_pa,
+                   VM_USER | VM_WRITE | VM_NO_EXECUTE) != VM_OK)
         return -25;
     if (vm_query_page(split_va, &queried_pa, &queried_flags) != VM_OK ||
         queried_pa != split_pa || !(queried_flags & VM_USER)) return -26;
@@ -462,7 +508,7 @@ int vm_self_test(void) {
 
         uint64_t target_va = base_va + (uint64_t)mappings * VM_LARGE_SIZE;
         status = vm_map_page(target_va, base_pa + 0x1000000ULL,
-                             VM_USER | VM_WRITE);
+                             VM_USER | VM_WRITE | VM_NO_EXECUTE);
         if (status != VM_ERR_NO_MEMORY) return -37;
         if (vm_tables_used() != vm_tables_capacity()) return -38;
         if (vm_query_page(target_va, &queried_pa, &queried_flags) !=
@@ -492,7 +538,7 @@ int vm_self_test(void) {
  */
 int vm_is_active(void)
 {
-    return vm_active;
+    return active_root != 0;
 }
 
 int vm_invalidate_page(uint64_t virtual_address)
@@ -500,7 +546,7 @@ int vm_invalidate_page(uint64_t virtual_address)
     if (!is_low_canonical(virtual_address))
         return VM_ERR_ADDRESS;
 
-    if (!vm_active)
+    if (active_root == 0)
         return VM_OK;
 
 #ifdef VM_HOST_TEST
@@ -511,39 +557,333 @@ int vm_invalidate_page(uint64_t virtual_address)
 #endif
 }
 
-int vm_activate(void)
+static int activate_root(uint64_t *root_table_pointer)
 {
-#ifdef VM_HOST_TEST
-    return VM_ERR_ACTIVE;
-#else
-    uint64_t root = vm_root_physical();
-
-    if (!root || (root & (VM_PAGE_SIZE - 1)))
+    uint64_t root = (uint64_t)(uintptr_t)root_table_pointer;
+    if (root_table_pointer == 0 || (root & (VM_PAGE_SIZE - 1U)) != 0)
         return VM_ERR_CORRUPT;
-
+#ifdef VM_HOST_TEST
+    active_root = root_table_pointer;
+    return VM_OK;
+#else
     if (root >= (1ULL << 30))
         return VM_ERR_ADDRESS;
-
     uint64_t current_cr3;
     __asm__ volatile("mov %%cr3, %0" : "=r"(current_cr3));
-
-    if ((current_cr3 & VM_ADDR_MASK) == root) {
-        vm_active = 1;
-        return VM_OK;
+    if ((current_cr3 & VM_ADDR_MASK) != (root & VM_ADDR_MASK)) {
+        __asm__ volatile("mov %0, %%cr3" : : "r"(root) : "memory");
     }
-
-    __asm__ volatile(
-        "mov %0, %%cr3"
-        :
-        : "r"(root)
-        : "memory"
-    );
-
-    vm_active = 1;
+    active_root = root_table_pointer;
     return VM_OK;
 #endif
 }
 
+int vm_activate(void)
+{
+    if (root_table == 0)
+        return VM_ERR_ARGUMENT;
+    return activate_root(root_table);
+}
+
+uint64_t vm_current_root_physical(void)
+{
+    return active_root ? (uint64_t)(uintptr_t)active_root : 0;
+}
+
+
+static int map_page_in_root(uint64_t *root, uint64_t va, uint64_t pa,
+                            uint64_t flags)
+{
+    struct walk_path path;
+    uint64_t *pte = 0;
+    int status;
+
+    if (root == 0) return VM_ERR_ARGUMENT;
+    if (!is_low_canonical(va)) return VM_ERR_ADDRESS;
+    if (!is_page_aligned(va) || !is_page_aligned(pa))
+        return VM_ERR_ALIGNMENT;
+    if (!is_valid_physical_page(pa)) return VM_ERR_ADDRESS;
+    if (flags & ~VM_LEAF_FLAG_MASK) return VM_ERR_FLAGS;
+    if ((flags & (VM_USER | VM_WRITE)) == (VM_USER | VM_WRITE) &&
+        !(flags & VM_NO_EXECUTE))
+        return VM_ERR_FLAGS;
+    if ((flags & (VM_USER | VM_GLOBAL)) == (VM_USER | VM_GLOBAL))
+        return VM_ERR_FLAGS;
+
+    status = walk(root, va, 1, flags, &path, &pte);
+    if (status != VM_OK) {
+        rollback_created(&path);
+        return status;
+    }
+    if (*pte & VM_PRESENT) {
+        rollback_created(&path);
+        return VM_ERR_EXISTS;
+    }
+    *pte = pa | VM_PRESENT | flags;
+    if (active_root == root)
+        return vm_invalidate_page(va);
+    return VM_OK;
+}
+
+static int protect_page_in_root(uint64_t *root, uint64_t va, uint64_t flags)
+{
+    struct walk_path path;
+    uint64_t *pte = 0;
+    uint64_t old_entry;
+    int status;
+
+    if (root == 0) return VM_ERR_ARGUMENT;
+    if (!is_low_canonical(va)) return VM_ERR_ADDRESS;
+    if (!is_page_aligned(va)) return VM_ERR_ALIGNMENT;
+    if (flags & ~VM_LEAF_FLAG_MASK) return VM_ERR_FLAGS;
+    if ((flags & (VM_USER | VM_WRITE)) == (VM_USER | VM_WRITE) &&
+        !(flags & VM_NO_EXECUTE))
+        return VM_ERR_FLAGS;
+    if ((flags & (VM_USER | VM_GLOBAL)) == (VM_USER | VM_GLOBAL))
+        return VM_ERR_FLAGS;
+
+    status = walk(root, va, 0, 0, &path, &pte);
+    if (status != VM_OK) return status;
+    if (path.large_leaf || !(*pte & VM_PRESENT))
+        return VM_ERR_NOT_MAPPED;
+    old_entry = *pte;
+    *pte = (old_entry & VM_ADDR_MASK) | VM_PRESENT | flags;
+    if (active_root == root)
+        return vm_invalidate_page(va);
+    return VM_OK;
+}
+
+static int unmap_page_in_root(uint64_t *root, uint64_t va)
+{
+    struct walk_path path;
+    uint64_t *pte = 0;
+    int status;
+
+    if (root == 0) return VM_ERR_ARGUMENT;
+    if (!is_low_canonical(va)) return VM_ERR_ADDRESS;
+    if (!is_page_aligned(va)) return VM_ERR_ALIGNMENT;
+    status = walk(root, va, 1, 0, &path, &pte);
+    if (status != VM_OK) {
+        rollback_created(&path);
+        return status;
+    }
+    if (!(*pte & VM_PRESENT)) {
+        rollback_created(&path);
+        return VM_ERR_NOT_MAPPED;
+    }
+    *pte = 0;
+    for (int level = 3; level >= 1; --level) {
+        uint64_t *child = path.tables[level];
+        uint64_t *parent = path.tables[level - 1];
+        unsigned int parent_index = path.indices[level - 1];
+        if (!table_is_empty(child)) break;
+        parent[parent_index] = 0;
+        release_table(child);
+    }
+    if (active_root == root)
+        return vm_invalidate_page(va);
+    return VM_OK;
+}
+
+static int query_page_in_root(uint64_t *root, uint64_t va,
+                              uint64_t *pa, uint64_t *flags)
+{
+    struct walk_path path;
+    uint64_t *entry_ptr = 0;
+    uint64_t entry;
+    int status;
+
+    if (root == 0 || pa == 0 || flags == 0)
+        return VM_ERR_ARGUMENT;
+    if (!is_low_canonical(va)) return VM_ERR_ADDRESS;
+    status = walk(root, va, 0, 0, &path, &entry_ptr);
+    if (status != VM_OK) return status;
+    entry = *entry_ptr;
+    if (!(entry & VM_PRESENT)) return VM_ERR_NOT_MAPPED;
+    if (path.large_leaf) {
+        *pa = (entry & VM_LARGE_ADDR_MASK) | (va & (VM_LARGE_SIZE - 1U));
+        *flags = entry & (VM_PRESENT | VM_WRITE | VM_USER | VM_PWT |
+                          VM_PCD | VM_ACCESSED | VM_DIRTY | VM_LARGE_PAGE |
+                          VM_GLOBAL | VM_NO_EXECUTE | (1ULL << 12));
+    } else {
+        *pa = (entry & VM_ADDR_MASK) | (va & (VM_PAGE_SIZE - 1U));
+        *flags = entry & ~VM_ADDR_MASK;
+    }
+    return VM_OK;
+}
+
+int vm_address_space_create(vm_address_space_t *space)
+{
+    uint64_t *root;
+    uint64_t *pdpt;
+    uint64_t *kernel_pdpt;
+
+    if (space == 0 || root_table == 0)
+        return VM_ERR_ARGUMENT;
+
+    root = allocate_table();
+    if (root == 0) return VM_ERR_NO_MEMORY;
+    pdpt = allocate_table();
+    if (pdpt == 0) {
+        release_table(root);
+        return VM_ERR_NO_MEMORY;
+    }
+    kernel_pdpt = entry_table(root_table[0]);
+    if (kernel_pdpt == 0 || !(kernel_pdpt[0] & VM_PRESENT)) {
+        release_table(pdpt);
+        release_table(root);
+        return VM_ERR_CORRUPT;
+    }
+
+    /* Share only the supervisor-only first-GiB kernel identity-map PD. */
+    pdpt[0] = kernel_pdpt[0];
+    root[0] = ((uint64_t)(uintptr_t)pdpt & VM_ADDR_MASK) |
+              VM_PRESENT | VM_WRITE;
+    space->root_physical = (uint64_t)(uintptr_t)root;
+    space->pdpt_physical = (uint64_t)(uintptr_t)pdpt;
+    space->magic = VM_ASPACE_MAGIC;
+    space->reserved = 0;
+    return VM_OK;
+}
+
+static int validate_pdpt_children(const uint64_t *pdpt,
+                                  int preserve_kernel_pd)
+{
+    for (unsigned int i = 0; i < VM_ENTRIES; ++i) {
+        uint64_t pdpte = pdpt[i];
+        uint64_t *pd;
+        if (!(pdpte & VM_PRESENT)) continue;
+        if (preserve_kernel_pd && i == 0) continue;
+        if (pdpte & VM_LARGE_PAGE) continue;
+        pd = entry_table(pdpte);
+        if (pd == 0) return VM_ERR_CORRUPT;
+        for (unsigned int j = 0; j < VM_ENTRIES; ++j) {
+            uint64_t pde = pd[j];
+            if (!(pde & VM_PRESENT) || (pde & VM_LARGE_PAGE)) continue;
+            if (entry_table(pde) == 0) return VM_ERR_CORRUPT;
+        }
+    }
+    return VM_OK;
+}
+
+static void release_pdpt_children(uint64_t *pdpt, int preserve_kernel_pd)
+{
+    for (unsigned int i = 0; i < VM_ENTRIES; ++i) {
+        uint64_t pdpte = pdpt[i];
+        uint64_t *pd;
+        if (!(pdpte & VM_PRESENT)) continue;
+        if (preserve_kernel_pd && i == 0) continue;
+        if (pdpte & VM_LARGE_PAGE) continue;
+        pd = entry_table(pdpte);
+        if (pd == 0) continue; /* Preflight has already validated the tree. */
+        for (unsigned int j = 0; j < VM_ENTRIES; ++j) {
+            uint64_t pde = pd[j];
+            uint64_t *pt;
+            if (!(pde & VM_PRESENT) || (pde & VM_LARGE_PAGE)) continue;
+            pt = entry_table(pde);
+            if (pt != 0) release_table(pt);
+        }
+        release_table(pd);
+    }
+}
+
+int vm_address_space_destroy(vm_address_space_t *space)
+{
+    uint64_t *root;
+    uint64_t *pdpt;
+    int status;
+
+    status = address_space_root(space, &root);
+    if (status != VM_OK) return status;
+    if (active_root == root) return VM_ERR_ACTIVE;
+    pdpt = table_from_physical(space->pdpt_physical);
+    if (pdpt == 0) return VM_ERR_CORRUPT;
+
+    /* Preflight the complete private subtree before releasing any table. */
+    status = validate_pdpt_children(pdpt, 1);
+    if (status != VM_OK) return status;
+    for (unsigned int i = 1; i < VM_ENTRIES; ++i) {
+        uint64_t pml4e = root[i];
+        uint64_t *other_pdpt;
+        if (!(pml4e & VM_PRESENT)) continue;
+        if (pml4e & VM_LARGE_PAGE) return VM_ERR_CORRUPT;
+        other_pdpt = entry_table(pml4e);
+        if (other_pdpt == 0) return VM_ERR_CORRUPT;
+        status = validate_pdpt_children(other_pdpt, 0);
+        if (status != VM_OK) return status;
+    }
+
+    release_pdpt_children(pdpt, 1);
+    for (unsigned int i = 1; i < VM_ENTRIES; ++i) {
+        uint64_t pml4e = root[i];
+        uint64_t *other_pdpt;
+        if (!(pml4e & VM_PRESENT)) continue;
+        other_pdpt = entry_table(pml4e);
+        release_pdpt_children(other_pdpt, 0);
+        release_table(other_pdpt);
+    }
+
+    release_table(pdpt);
+    release_table(root);
+    space->root_physical = 0;
+    space->pdpt_physical = 0;
+    space->magic = 0;
+    space->reserved = 0;
+    return VM_OK;
+}
+
+int vm_address_space_activate(const vm_address_space_t *space)
+{
+    uint64_t *root;
+    int status = address_space_root(space, &root);
+    if (status != VM_OK) return status;
+    return activate_root(root);
+}
+
+int vm_address_space_map_page(vm_address_space_t *space, uint64_t va,
+                              uint64_t pa, uint64_t flags)
+{
+    uint64_t *root;
+    int status = address_space_root(space, &root);
+    if (status != VM_OK) return status;
+    if (va < VM_USER_MIN_VA || va >= VM_USER_MAX_VA)
+        return VM_ERR_ADDRESS;
+    if (!(flags & VM_USER))
+        return VM_ERR_FLAGS;
+    return map_page_in_root(root, va, pa, flags);
+}
+
+int vm_address_space_unmap_page(vm_address_space_t *space, uint64_t va)
+{
+    uint64_t *root;
+    int status = address_space_root(space, &root);
+    if (status != VM_OK) return status;
+    if (va < VM_USER_MIN_VA || va >= VM_USER_MAX_VA)
+        return VM_ERR_ADDRESS;
+    return unmap_page_in_root(root, va);
+}
+
+int vm_address_space_protect_page(vm_address_space_t *space, uint64_t va,
+                                  uint64_t flags)
+{
+    uint64_t *root;
+    int status = address_space_root(space, &root);
+    if (status != VM_OK) return status;
+    if (va < VM_USER_MIN_VA || va >= VM_USER_MAX_VA)
+        return VM_ERR_ADDRESS;
+    if (!(flags & VM_USER))
+        return VM_ERR_FLAGS;
+    return protect_page_in_root(root, va, flags);
+}
+
+int vm_address_space_query_page(const vm_address_space_t *space, uint64_t va,
+                                uint64_t *pa, uint64_t *flags)
+{
+    uint64_t *root;
+    int status = address_space_root(space, &root);
+    if (status != VM_OK) return status;
+    return query_page_in_root(root, va, pa, flags);
+}
 
 /*
  * Return true only when both CPU NX support and EFER.NXE

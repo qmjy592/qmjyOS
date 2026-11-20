@@ -27,8 +27,4 @@ This directory contains x86_64-specific kernel implementation.
 
 The planned x86_64 boot targets are BIOS and UEFI.
 
-The current build target is x86_64 + BIOS.
-Its development bootstrap is not a completed QBoot BIOS manager.
-
-The UEFI path remains planned and must not be reported as supported
-until its implementation and verification requirements are satisfied.
+CI covers x86_64 + BIOS and an initial x86_64 + UEFI path. The BIOS bootstrap is not a completed QBoot manager. The UEFI loader/kernel handoff has build and OVMF runtime test coverage, but remains experimental and is not release-ready. AArch64 is not supported yet.

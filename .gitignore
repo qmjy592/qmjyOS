@@ -54,12 +54,14 @@ Thumbs.db
 /Makefile.before-*
 /linker32.ld.before-*
 
-# Host-side test binaries
+# Host-side test binaries (legacy root paths)
 .memory-host-test
 .paging-host-test
 .vfs-host-test
 .ramfs-host-test
+.qfs-host-test
 .interface-header-test
+.memory-overlap-test
 
 # Python generated files
 __pycache__/

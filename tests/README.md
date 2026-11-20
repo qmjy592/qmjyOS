@@ -75,12 +75,29 @@ SKIP 不等于 PASS。
 
 ## 6. Test framework status / 测试框架状态
 
-The current Makefile targets are host-side and boot-image tests.
+The current Makefile targets include host-side regression tests, boot-image static checks, and QEMU runtime tests for BIOS/UEFI when the required emulator and firmware are available.
 
 The unified QTest runtime framework remains planned.
 
-当前 Makefile 测试目标由主机侧测试和启动映像静态测试组成。
+当前 Makefile 测试目标包括主机侧回归测试、启动映像静态检查，以及在工具/固件齐备时执行 BIOS/UEFI QEMU 运行测试。
 
 统一的 QTest 运行时框架仍处于规划阶段。
 
 See tests/qtest/README.md for the QTest implementation plan.
+
+- `make test-process-runtime`
+- `make test-scheduler-aspace`
+
+- `make test-syscall-x86_64-abi` — x86_64 Ring 3 syscall trap-frame argument/return ABI
+
+## Phase 3 runtime test coverage (2026-11-21)
+
+The following host tests are part of QBuild's BIOS test selection:
+
+- `make test-process-runtime`: ELF image to private process address-space runtime and user stack mapping checks.
+- `make test-scheduler-aspace`: task/address-space CR3 association and switching checks under the host test harness.
+- `make test-syscall-x86_64-abi`: x86_64 syscall trap-frame mapping and argument/result checks.
+
+These tests are host-side. The QEMU BIOS/UEFI scripts additionally require the actual serial markers for private CR3 activation, CPL3 entry, process exit/page reclaim, and the existing scheduler runtime.
+
+Host test executables are generated in `build/tests/host/`, not stored as checked-in binaries. Run `make clean-host-test-artifacts` to remove them before a fresh host test pass.

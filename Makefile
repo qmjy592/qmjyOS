@@ -5,13 +5,14 @@ OBJCOPY := llvm-objcopy
 HOST_CC ?= clang
 HOST_TEST_CFLAGS ?= -std=c11 -Wall -Wextra -Werror
 
-HOST_MEMORY_TEST := .memory-host-test
+HOST_TEST_BIN_DIR := build/tests/host
+HOST_MEMORY_TEST := $(HOST_TEST_BIN_DIR)/memory-host-test
 HOST_MEMORY_OVERLAP_TEST := build/tests/memory/memory_overlap_test
 HOST_MEMORY_BOOT_INFO_TEST := build/tests/memory/memory_boot_info_test
-HOST_PAGING_TEST := .paging-host-test
-HOST_VFS_TEST := .vfs-host-test
-HOST_RAMFS_TEST := .ramfs-host-test
-HOST_QFS_TEST := .qfs-host-test
+HOST_PAGING_TEST := $(HOST_TEST_BIN_DIR)/paging-host-test
+HOST_VFS_TEST := $(HOST_TEST_BIN_DIR)/vfs-host-test
+HOST_RAMFS_TEST := $(HOST_TEST_BIN_DIR)/ramfs-host-test
+HOST_QFS_TEST := $(HOST_TEST_BIN_DIR)/qfs-host-test
 
 CPPFLAGS := \
 -Iinclude \
@@ -40,7 +41,7 @@ MODULE_MK := build/modules.mk
 
 .PHONY: all run clean \
         test-memory test-paging test-vfs test-ramfs test-qfs test-boot \
-        test-kernel-foundation clean-memory-test module-plan
+        test-kernel-foundation clean-memory-test clean-host-test-artifacts module-plan
 
 all: kernel.elf
 
@@ -76,23 +77,23 @@ run: kernel.elf
 	qemu-system-x86_64 -kernel kernel.elf -nographic -no-reboot
 
 clean:
+	rm -f .memory-host-test .paging-host-test .vfs-host-test .ramfs-host-test .qfs-host-test .interface-header-test .memory-overlap-test
 	rm -f $(OBJS_32) $(OBJS_64)
 	rm -f $(OBJS_32:.o=.d) $(OBJS_64:.o=.d)
 	rm -f kernel.elf kernel64.elf kernel64-uefi.elf kernel64.bin kernel64.o
-	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
-	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST) $(HOST_QFS_TEST)
-	rm -f $(HOST_INTERFACE_TEST)
+	rm -rf build/tests
 	rm -f $(MODULE_MK)
 	rm -rf build/qboot
-	rm -rf build/tests/kernel-foundation
-	rm -rf build/tests/memory
+
+$(HOST_TEST_BIN_DIR):
+	mkdir -p $@
 
 test-memory: $(HOST_MEMORY_TEST) $(HOST_MEMORY_OVERLAP_TEST) $(HOST_MEMORY_BOOT_INFO_TEST)
 	./$(HOST_MEMORY_TEST)
 	./$(HOST_MEMORY_OVERLAP_TEST)
 	./$(HOST_MEMORY_BOOT_INFO_TEST)
 
-$(HOST_MEMORY_TEST): tests/memory_host_test.c mm/physical/memory.c mm/physical/memory.h kernel/core/boot_info.c
+$(HOST_MEMORY_TEST): tests/memory_host_test.c mm/physical/memory.c mm/physical/memory.h kernel/core/boot_info.c | $(HOST_TEST_BIN_DIR)
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Iinclude -Imm/physical -o $@ tests/memory_host_test.c mm/physical/memory.c kernel/core/boot_info.c
 
 $(HOST_MEMORY_OVERLAP_TEST): tests/memory_overlap_test.c mm/physical/memory.c mm/physical/memory.h kernel/core/boot_info.c
@@ -106,13 +107,13 @@ $(HOST_MEMORY_BOOT_INFO_TEST): tests/memory_boot_info_test.c mm/physical/memory.
 test-paging: $(HOST_PAGING_TEST)
 	./$(HOST_PAGING_TEST)
 
-$(HOST_PAGING_TEST): tests/paging_host_test.c mm/paging/paging.c mm/paging/paging.h
+$(HOST_PAGING_TEST): tests/paging_host_test.c mm/paging/paging.c mm/paging/paging.h | $(HOST_TEST_BIN_DIR)
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -DVM_HOST_TEST -I. -Imm/paging -o $@ tests/paging_host_test.c mm/paging/paging.c
 
 test-vfs: $(HOST_VFS_TEST)
 	./$(HOST_VFS_TEST)
 
-$(HOST_VFS_TEST): tests/filesystem/vfs_host_test.c fs/vfs/vfs.c fs/vfs/vfs.h
+$(HOST_VFS_TEST): tests/filesystem/vfs_host_test.c fs/vfs/vfs.c fs/vfs/vfs.h | $(HOST_TEST_BIN_DIR)
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -o $@ tests/filesystem/vfs_host_test.c fs/vfs/vfs.c
 
 test-ramfs: $(HOST_RAMFS_TEST)
@@ -121,18 +122,22 @@ test-ramfs: $(HOST_RAMFS_TEST)
 test-qfs: $(HOST_QFS_TEST)
 	./$(HOST_QFS_TEST)
 
-$(HOST_QFS_TEST): tests/filesystem/qfs_host_test.c fs/qfs/qfs.c fs/vfs/vfs.c drivers/block/block.c
+$(HOST_QFS_TEST): tests/filesystem/qfs_host_test.c fs/qfs/qfs.c fs/vfs/vfs.c drivers/block/block.c | $(HOST_TEST_BIN_DIR)
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Iinclude -o $@ tests/filesystem/qfs_host_test.c fs/qfs/qfs.c fs/vfs/vfs.c drivers/block/block.c
 
-$(HOST_RAMFS_TEST): tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c fs/qfs/qfs.c drivers/block/block.c
+$(HOST_RAMFS_TEST): tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c fs/qfs/qfs.c drivers/block/block.c | $(HOST_TEST_BIN_DIR)
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -I. -Iinclude -o $@ tests/filesystem/ramfs_host_test.c fs/vfs/vfs.c fs/ramfs/ramfs.c fs/core/fs_init.c fs/qfs/qfs.c drivers/block/block.c
 
 clean-memory-test:
-	rm -f $(HOST_MEMORY_TEST) $(HOST_PAGING_TEST)
-	rm -f $(HOST_VFS_TEST) $(HOST_RAMFS_TEST)
-	rm -f $(HOST_INTERFACE_TEST)
+	rm -rf $(HOST_TEST_BIN_DIR)
+
+.PHONY: clean-host-test-artifacts
+clean-host-test-artifacts:
+	rm -rf build/tests
+	rm -f .memory-host-test .paging-host-test .vfs-host-test .ramfs-host-test .qfs-host-test .interface-header-test .memory-overlap-test
 
 test-boot: kernel.elf kernel64.elf kernel64.bin qboot-bios
+	python3 tests/boot/test_phase3_runtime_markers.py
 	python3 tests/boot/test_bios_nxe.py
 	python3 tests/boot/test_qboot_gdt.py
 	bash tools/verify_boot.sh
@@ -143,14 +148,14 @@ test-boot: kernel.elf kernel64.elf kernel64.bin qboot-bios
 -include $(OBJS_64:.o=.d)
 
 # Public interface header compilation test.
-HOST_INTERFACE_TEST := .interface-header-test
+HOST_INTERFACE_TEST := $(HOST_TEST_BIN_DIR)/interface-header-test
 
 .PHONY: test-interfaces
 
 test-interfaces: $(HOST_INTERFACE_TEST)
 	./$(HOST_INTERFACE_TEST)
 
-$(HOST_INTERFACE_TEST): tests/interfaces/interface_header_test.c
+$(HOST_INTERFACE_TEST): tests/interfaces/interface_header_test.c | $(HOST_TEST_BIN_DIR)
 	$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $<
 
 # ============================================================
@@ -281,13 +286,21 @@ clean-heap-test:
 HOST_PHASE23_TEST_DIR := build/tests/phase2-phase3
 HOST_ELF64_TEST := $(HOST_PHASE23_TEST_DIR)/elf64-test
 HOST_PROCESS_TEST := $(HOST_PHASE23_TEST_DIR)/process-test
+HOST_PROCESS_RUNTIME_TEST := $(HOST_PHASE23_TEST_DIR)/process-runtime-test
+HOST_SCHEDULER_ASPACE_TEST := $(HOST_PHASE23_TEST_DIR)/scheduler-aspace-test
 
-.PHONY: test-elf64 test-process
+.PHONY: test-elf64 test-process test-process-runtime test-scheduler-aspace
 test-elf64: $(HOST_ELF64_TEST)
 >./$(HOST_ELF64_TEST)
 
 test-process: $(HOST_PROCESS_TEST)
 >./$(HOST_PROCESS_TEST)
+
+test-process-runtime: $(HOST_PROCESS_RUNTIME_TEST)
+>./$(HOST_PROCESS_RUNTIME_TEST)
+
+test-scheduler-aspace: $(HOST_SCHEDULER_ASPACE_TEST)
+>./$(HOST_SCHEDULER_ASPACE_TEST)
 
 $(HOST_PHASE23_TEST_DIR):
 >mkdir -p $@
@@ -336,3 +349,20 @@ qboot-uefi: kernel64-uefi.elf
 test-qboot-uefi: qboot-uefi
 >python3 tests/boot/test_uefi_elf_layout.py kernel64-uefi.elf
 >bash tools/qboot/test_uefi_boot.sh
+
+$(HOST_PROCESS_RUNTIME_TEST): tests/kernel/process_runtime_test.c kernel/core/process_runtime.c kernel/core/user_access.c kernel/core/process.c exec/elf/elf64.c mm/paging/paging.c mm/heap/heap.c | $(HOST_PHASE23_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -DVM_HOST_TEST -I. -Iinclude -Imm/paging -Imm/physical -o $@ tests/kernel/process_runtime_test.c kernel/core/process_runtime.c kernel/core/user_access.c kernel/core/process.c exec/elf/elf64.c mm/paging/paging.c mm/heap/heap.c
+
+$(HOST_SCHEDULER_ASPACE_TEST): tests/kernel/scheduler_aspace_test.c sched/core/task.c mm/paging/paging.c | $(HOST_PHASE23_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -DVM_HOST_TEST -I. -Iinclude -Imm/paging -Isched/core -Idrivers/serial -o $@ tests/kernel/scheduler_aspace_test.c sched/core/task.c mm/paging/paging.c
+
+
+# x86_64 Ring 3 syscall trap-frame ABI tests.
+.PHONY: test-syscall-x86_64-abi
+SYSCALL_X86_64_ABI_TEST := build/tests/phase2-phase3/syscall-x86-64-abi-test
+
+test-syscall-x86_64-abi: $(SYSCALL_X86_64_ABI_TEST)
+>./$(SYSCALL_X86_64_ABI_TEST)
+
+$(SYSCALL_X86_64_ABI_TEST): tests/syscall/x86_64_abi_test.c kernel/syscall/x86_64_abi.c | $(HOST_PHASE23_TEST_DIR)
+>$(HOST_CC) $(HOST_TEST_CFLAGS) -Iinclude -o $@ $^

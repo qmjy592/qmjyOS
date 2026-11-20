@@ -1,3 +1,6 @@
+#ifdef VM_HOST_TEST
+#include <stdlib.h>
+#endif
 #include "task.h"
 #include "serial.h"
 
@@ -22,7 +25,27 @@ static void task_init_one(struct task *t, unsigned int id, void (*entry)(void)) 
     *(--sp) = 0; /* r13 */
     *(--sp) = 0; /* r14 */
     *(--sp) = 0; /* r15 */
-    t->ctx = (struct context *)sp; t->id = id; t->switches = 0;
+    t->ctx = (struct context *)sp;
+    t->id = id;
+    t->switches = 0;
+    t->address_space = 0;
+}
+
+static int task_activate_address_space(const struct task *task)
+{
+    if (task == 0)
+        return VM_ERR_ARGUMENT;
+    if (task->address_space == 0)
+        return vm_activate();
+    return vm_address_space_activate(task->address_space);
+}
+
+int task_set_address_space(uint32_t task_id, vm_address_space_t *address_space)
+{
+    if (task_id >= TASK_COUNT)
+        return -1;
+    tasks[task_id].address_space = address_space;
+    return 0;
 }
 void task_init(void) {
     task_init_one(&tasks[0], 0, entries[0]);
@@ -30,22 +53,46 @@ void task_init(void) {
     current_index = 0; current_task = &tasks[0];
     serial_puts("Cooperative scheduler initialized (2 tasks).\n");
 }
+
+/* Stop execution after a fatal scheduler error.
+ * Host tests abort visibly; the real x86 kernel halts the CPU.
+ */
+static __attribute__((noreturn)) void task_halt(void)
+{
+#ifdef VM_HOST_TEST
+    abort();
+#else
+    for (;;) {
+        __asm__ volatile("cli; hlt" ::: "memory");
+    }
+#endif
+}
+
 void task_yield(void) {
     unsigned int next_index = (current_index + 1U) % TASK_COUNT;
     struct task *old = current_task;
     struct task *next = &tasks[next_index];
-    current_index = next_index; current_task = next;
+    if (task_activate_address_space(next) != VM_OK) {
+        serial_puts("Scheduler: address-space activation failed; halting.\n");
+        task_halt();
+    }
+    current_index = next_index;
+    current_task = next;
     old->switches++;
     switch_to(&old->ctx, next->ctx);
 }
 void task_start(void) __attribute__((noreturn));
 void task_start(void) {
-    /* Enter first task using the same context-switch path as later yields. */
+    /* Enter first task using the same address-space/context path as later yields. */
     struct context *bootstrap_ctx = 0;
+    if (task_activate_address_space(current_task) != VM_OK) {
+        serial_puts("Scheduler: initial address-space activation failed; halting.\n");
+        task_halt();
+    }
     switch_to(&bootstrap_ctx, current_task->ctx);
-    for (;;) __asm__ volatile("cli; hlt");
+    task_halt();
 }
 void task_exit(void) {
     serial_puts("Task returned unexpectedly; halting.\n");
-    for (;;) __asm__ volatile("cli; hlt");
+    task_halt();
 }

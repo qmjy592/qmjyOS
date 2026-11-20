@@ -20,7 +20,7 @@ Allowed values:
 | experimental | Partial or experimental implementation exists |
 | implemented | Implementation source is mapped and available |
 
-These values are consumed by QBuild v0.5.0.
+These values are consumed by QBuild 1.0.0 (compatible with the earlier v0.5.0 state model).
 
 They describe implementation maturity, not runtime correctness.
 
@@ -63,3 +63,16 @@ QBuild v0.5.0 accepts exactly:
 Any additional state requires an explicit QBuild format change.
 
 This document does not change the current configuration format.
+
+## Current inventory snapshot
+
+QBuild 1.0.0 reported this metadata on 2026-11-21:
+
+- Total modules: 58
+- Source-mapped modules: 22
+- Modules in current build plan: 17
+- `implemented`: 1
+- `experimental`: 20
+- `planned`: 37
+
+These are configuration counts, not test coverage or runtime completion percentages.

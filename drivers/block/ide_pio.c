@@ -64,10 +64,11 @@ static inline qm_u8_t ide_inb(qm_u16_t port)
 
 static inline void ide_io_delay(void)
 {
-    (void)ide_inb(IDE_ALTSTATUS);
-    (void)ide_inb(IDE_ALTSTATUS);
-    (void)ide_inb(IDE_ALTSTATUS);
-    (void)ide_inb(IDE_ALTSTATUS);
+    qm_u32_t i;
+
+    /* ATA timing: wait at least 400 ns before sampling Status. */
+    for (i = 0; i < 15U; ++i)
+        (void)ide_inb(IDE_ALTSTATUS);
 }
 
 static inline void ide_insw(
@@ -132,6 +133,32 @@ static int ide_wait(int require_drq)
     return -1;
 }
 
+/*
+ * Wait until the selected device can accept a new command.
+ * Previous-command ERR/DF bits are deliberately not tested here: they can
+ * remain visible until a new command is accepted. The command's own result
+ * is checked after the mandatory post-command settling delay.
+ */
+static int ide_wait_idle(void)
+{
+    qm_u32_t timeout;
+    qm_u8_t status;
+
+    for (timeout = 0; timeout < IDE_TIMEOUT; ++timeout) {
+        status = ide_inb(IDE_ALTSTATUS);
+
+        if (status == 0xFF || status == 0x00)
+            return -1;
+
+        if (status & (IDE_STATUS_BSY | IDE_STATUS_DRQ))
+            continue;
+
+        return 0;
+    }
+
+    return -1;
+}
+
 
 /*
  * Wait for an ATA command to complete.
@@ -184,12 +211,15 @@ static int ide_identify(
         return -1;
 
     ide_select(slave);
+    if (ide_wait_idle() != 0)
+        return -1;
 
     ide_outb(IDE_SECCOUNT0, 0);
     ide_outb(IDE_LBA0, 0);
     ide_outb(IDE_LBA1, 0);
     ide_outb(IDE_LBA2, 0);
     ide_outb(IDE_COMMAND, IDE_CMD_IDENTIFY);
+    ide_io_delay();
 
     status = ide_inb(IDE_STATUS);
 
@@ -220,6 +250,7 @@ static int ide_identify(
         return -1;
 
     ide_insw(IDE_DATA, identify, IDE_WORDS_PER_SECTOR);
+    ide_io_delay();
 
     if (ide_wait_complete() != 0)
         return -1;
@@ -255,7 +286,7 @@ static int ide_transfer_one(
 
     ide_select(slave);
 
-    if (ide_wait(0) != 0)
+    if (ide_wait_idle() != 0)
         return -1;
 
     ide_outb(IDE_FEATURES, 0);
@@ -277,6 +308,7 @@ static int ide_transfer_one(
 
     command = write ? IDE_CMD_WRITE : IDE_CMD_READ;
     ide_outb(IDE_COMMAND, command);
+    ide_io_delay();
 
     if (ide_wait(1) != 0)
         return -1;
@@ -287,6 +319,7 @@ static int ide_transfer_one(
             buffer,
             IDE_WORDS_PER_SECTOR
         );
+        ide_io_delay();
 
         if (ide_wait_complete() != 0)
             return -1;
@@ -296,6 +329,7 @@ static int ide_transfer_one(
             buffer,
             IDE_WORDS_PER_SECTOR
         );
+        ide_io_delay();
 
         if (ide_wait_complete() != 0)
             return -1;
@@ -406,9 +440,10 @@ static qm_status_t ide_flush(qm_block_device_id_t id)
 
     ide_select(slave);
 
-    if (ide_wait(0) != 0)
+    if (ide_wait_idle() != 0)
         return (qm_status_t)-1;
     ide_outb(IDE_COMMAND, IDE_CMD_FLUSH);
+    ide_io_delay();
 
     if (ide_wait_complete() != 0)
         return (qm_status_t)-1;

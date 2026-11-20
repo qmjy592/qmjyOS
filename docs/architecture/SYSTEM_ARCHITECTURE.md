@@ -64,12 +64,7 @@ Do not create new implementation under historical `arm64` paths.
 
 ## 5. Boot strategy
 
-The current build target is x86_64 + BIOS.
-
-Planned extensions include:
-
-- x86_64 + UEFI
-- AArch64 boot support
+CI currently builds and runtime-tests x86_64 + BIOS and an initial x86_64 + UEFI path. UEFI remains experimental, not release-ready. AArch64 boot support remains unsupported and is rejected by QBuild.
 
 QBoot is intended to be developed by qmjyOS itself.
 The current development BIOS bootstrap is not a complete QBoot manager.
@@ -84,3 +79,9 @@ and hardware runtime tests are distinct evidence levels.
 
 Current implementation maturity and verification evidence must follow
 `docs/architecture/MODULE_STATUS_MODEL.md`.
+
+## Phase 3 runtime status (2026-11-21)
+
+The process-runtime milestone now includes ELF-to-runtime integration, a private page-table root, USER/RW/NX stack validation, CR3 activation, CPL3 entry, test syscall echo/exit, and process page reclamation. Host regression tests cover process runtime, scheduler address-space switching, and syscall frame mapping. The latest QEMU BIOS run was user-reported as passing; its raw serial log is not in the review snapshot.
+
+These changes do not establish a production process model, concurrent user processes, preemption, fault-safe user-copy, complete user exception recovery, or a security audit.

@@ -11,10 +11,10 @@ int main(void)
     qm_process_handle_t third = 0;
     qm_process_info_t info;
 
-    image.entry = 0x400040;
+    image.entry = 0x40000040;
     image.segment_count = 1;
-    image.segments[0].virtual_address = 0x400000;
-    image.segments[0].map_address = 0x400000;
+    image.segments[0].virtual_address = 0x40000000;
+    image.segments[0].map_address = 0x40000000;
     image.segments[0].map_size = 4096;
     image.segments[0].memory_size = 128;
     image.segments[0].file_size = 64;

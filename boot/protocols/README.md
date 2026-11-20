@@ -3,7 +3,7 @@
 QBoot 是 qmjyOS 自研启动管理器。
 
 本目录定义 QBoot 与内核之间的统一启动信息交接协议。
-协议定义不代表 BIOS、UEFI 或 ARM64 启动器已经实现。
+协议定义不代表所有 BIOS/UEFI/AArch64 启动器均已完成；当前 x86_64 BIOS 与初步 UEFI 实现均仍处于开发/实验阶段，AArch64 尚未实现。
 
 ## 1. 基本结构
 
@@ -80,8 +80,8 @@ QBoot 必须保证启动信息及其引用的数据在内核完成复制或明�
 
 以下功能尚未完成：
 
-- 正式 QBoot BIOS 启动器
-- QBoot UEFI 应用
+- 完整、release-ready QBoot BIOS 启动器
+- release-ready UEFI 应用及安全加固（已有初步实现和 OVMF CI 测试）
 - ARM64 启动器
 - 启动菜单
 - 启动项持久化

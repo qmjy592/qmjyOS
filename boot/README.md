@@ -23,8 +23,8 @@ It is not yet the complete QBoot BIOS manager.
 
 The following remain planned:
 
-- Complete QBoot BIOS manager
-- Complete x86_64 UEFI boot path (initial EFI loader and kernel handoff are under development; OVMF runtime verification is still required)
+- Complete QBoot BIOS manager (the BIOS disk image is built and QEMU-tested in CI, but the manager is still a development implementation)
+- Securely hardened/release-ready UEFI path (an initial EFI loader and kernel handoff are built and OVMF-tested in CI; firmware compatibility and security hardening remain incomplete)
 - AArch64 boot implementation
 - Boot menu and persistent boot entries
 - Kernel image validation and loading

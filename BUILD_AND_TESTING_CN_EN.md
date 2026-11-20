@@ -58,9 +58,9 @@ Makefile 当前执行的命令为：
 qemu-system-x86_64 -kernel kernel.elf -nographic -no-reboot
 ```
 
-Capture the full serial output. Check whether the kernel banner, memory allocator messages, paging self-test result, GDT/TSS message, scheduler startup message and task output appear. Do not infer success from QEMU merely opening or from a linker exit code.
+Capture the full serial output. Check whether the kernel banner, memory allocator messages, paging self-test result, GDT/TSS message, Phase 3 private-CR3/CPL3/process-exit markers, scheduler startup message and task output appear. Do not infer success from QEMU merely opening or from a linker exit code.
 
-请保存完整串口输出。检查是否出现内核启动标志、内存分配器信息、分页自测试结果、GDT/TSS 信息、调度器启动信息和任务输出。不能仅凭 QEMU 窗口打开或链接器退出码推断系统运行成功。
+请保存完整串口输出。检查是否出现内核启动标志、内存分配器信息、分页自测试结果、GDT/TSS 信息、Phase 3 独立 CR3/CPL3/进程退出标志、调度器启动信息和任务输出。不能仅凭 QEMU 窗口打开或链接器退出码推断系统运行成功。
 
 ## 4. Host-side memory allocator test / 主机侧内存分配器测试
 
@@ -117,8 +117,8 @@ build/test-evidence/qmjyOS-memory-test-ubsan
    确认定时器中断得到确认且 tick 递增，但不要把它描述为抢占。
 6. Confirm both cooperative tasks make progress and alternate through explicit yields.
    确认两个协作任务都能推进，并通过显式 yield 交替运行。
-7. Run the existing basic Ring 3 transition test; continue testing protection faults, TSS stack switching, exception frames and syscall ABI before claiming complete user-mode isolation.
-   运行现有基础 Ring 3 切换测试；在宣称完整用户态隔离前，继续验证保护异常、TSS 栈切换、异常栈帧和系统调用 ABI。
+7. Run the Phase 3 process-runtime Ring 3 test and require private CR3, CPL3 entry, syscall echo/return, process exit/page reclamation and scheduler-progress markers. Continue testing protection faults, TSS stack switching, exception frames and fault-safe user copy before claiming complete isolation.
+   运行 Phase 3 进程运行时 Ring 3 测试，并确认独立 CR3、CPL3 入口、syscall echo/返回、进程退出/页面回收及调度器推进标志。完整隔离仍需继续验证保护异常、TSS 栈切换、异常栈帧和 fault-safe 用户拷贝。
 
 ## 7. Diagnostics to record / 建议记录的诊断信息
 
@@ -245,6 +245,14 @@ QBuild 1.0.0 extends the existing Makefile frontend with safe module configurati
 
 QBuild 1.0.0 新增安全模块配置修改、SHA-256 快照与恢复回滚、构建/测试 JSON 报告、工具链诊断和自身回归测试。建议执行 `./qbuild doctor`、`./qbuild self-test`、`./qbuild test --arch x86_64 --boot bios --jobs 2`。构建/测试日志及报告保存在已忽略的 `build/qbuild/reports/`，配置快照保存在已忽略的 `build/qbuild/snapshots/`。
 
-The supported target remains x86_64 + BIOS. A local PASS does not imply GitHub Actions PASS; validate the pushed commit's workflow separately. QBuild 1.0.0 and the qmjyOS system release version are independent.
+CI currently covers x86_64 + BIOS and an initial x86_64 + UEFI path. A local PASS does not imply GitHub Actions PASS; validate the pushed commit's workflow separately. QBuild 1.0.0 and the qmjyOS system release version are independent.
 
-当前支持目标仍为 x86_64 + BIOS。本地 PASS 不等于 GitHub Actions PASS；推送后必须单独核验对应提交的 CI。QBuild 1.0.0 与 qmjyOS 操作系统发布版本相互独立。
+CI 当前覆盖 x86_64 + BIOS 和初步 x86_64 + UEFI。本地 PASS 不等于 GitHub Actions PASS；推送后必须单独核验对应提交的 CI。QBuild 1.0.0 与 qmjyOS 操作系统发布版本相互独立。
+
+## Phase 3 runtime tests (2026-11-21)
+
+The BIOS QEMU runtime checks now require markers for private PML4 and USER/RW/NX stack readiness, private CR3 activation and CPL3 entry, ELF process exit/page reclamation, the basic privilege transition, and cooperative scheduler progress. The UEFI OVMF runtime checks require the UEFI handoff markers plus the same Phase 3 and scheduler markers.
+
+The host suite adds `test-process-runtime`, `test-scheduler-aspace`, and `test-syscall-x86_64-abi`. These are useful regressions but are not hardware isolation or security proofs. The user-copy implementation performs page prevalidation followed by direct copying; fault-safe recovery remains a known gap.
+
+The review container ran `make -B -j2 all` successfully. QBuild host regressions passed after cleaning stale host binaries, but the complete `test-boot` target could not finish in this container because `llvm-readelf` is unavailable; QEMU is also unavailable here. The user's Termux QEMU BIOS runtime result is recorded separately in `docs/development/PHASE3_RUNTIME_VALIDATION_2026-11-21.md`. Do not label this review-container run as full CI.

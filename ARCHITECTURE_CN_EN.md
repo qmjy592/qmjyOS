@@ -130,7 +130,7 @@ IDT（Interrupt Descriptor Table）包含 256 个门描述符。`idt.c` 负责�
 
 `excep.S` 为异常向量 0–31 提供入口桩。对于 CPU 自动压入错误码的异常，入口只压入向量号；对于不自动压入错误码的异常，入口先压入一个 0 作为统一占位，再压入向量号。这样公共处理路径就可以按固定顺序读取向量号和错误码。
 
-公共异常入口应保存通用寄存器，保持栈布局稳定，再调用 C 处理函数。当前 `exception.c` 根据向量号输出异常名称、错误码和 RIP；对于 Page Fault（向量 14），还读取 CR2 输出故障线性地址，随后进入 `cli; hlt` 停机循环。
+公共异常入口应保存通用寄存器，保持栈布局稳定，再调用 C 处理函数。当前 `exception.c` 对来自 CPL3 的异常尝试终止当前进程并返回内核；无法隔离的用户异常和内核异常会输出异常名称、错误码、RIP，Page Fault（向量 14）还会读取 CR2，随后进入 `cli; hlt` 停机循环。
 
 需要谨慎对待异常栈帧：CPU 是否额外压入旧 SS:RSP，取决于是否发生特权级切换；某些异常还会有 CPU 错误码。未来若允许 Ring 3，不能假设所有异常帧都只有 RIP、CS、RFLAGS，也不能在没有验证的情况下用固定偏移读取跨特权级字段。
 
@@ -140,9 +140,9 @@ The Interrupt Descriptor Table (IDT) contains 256 gate descriptors. `idt.c` cons
 
 `excep.S` provides entry stubs for exception vectors 0–31. For exceptions where the CPU pushes an error code, the stub pushes only the vector number. For exceptions without a CPU error code, the stub first pushes zero as a placeholder and then pushes the vector number. This allows the common path to read the vector and error code in a consistent order.
 
-The common exception entry should save general-purpose registers, maintain a stable stack layout, and call the C handler. The current `exception.c` prints the exception name, error code and RIP. For Page Fault (vector 14), it also reads CR2 to report the faulting linear address, then enters a `cli; hlt` halt loop.
+The common exception entry should save general-purpose registers, maintain a stable stack layout, and call the C handler. Exceptions originating in CPL3 attempt to terminate the active process and resume the kernel; uncontained user faults and kernel faults print the exception name, error code and RIP. Page Fault (vector 14) also reports CR2 before the terminal `cli; hlt` loop.
 
-Exception frames require care: whether the CPU also pushes old SS:RSP depends on whether a privilege transition occurred; some exceptions also carry a CPU-pushed error code. If Ring 3 is enabled later, code must not assume that every frame contains only RIP, CS and RFLAGS, nor read cross-privilege fields using unverified fixed offsets.
+Exception frames require care: whether the CPU also pushes old SS:RSP depends on whether a privilege transition occurred; some exceptions also carry a CPU-pushed error code. The current CPL3 runtime uses a defined trap frame for its syscall entry; other exception frame shapes still require vector/error-code-aware handling. Do not assume every frame has the same fields.
 
 ## 6. PIC, PIT and IRQ flow / PIC、PIT 与 IRQ 流程
 
@@ -186,7 +186,7 @@ The allocator reserves low memory, the kernel image, Multiboot structures and ca
 
 `vm_unmap_page` 清除叶子 PTE，并从下向上回收空页表页，但保留根表。`vm_query_page` 返回物理地址与叶子标志。`vm_self_test` 对未激活页表池执行映射、查询、重复映射、解除映射和用户权限路径等测试。
 
-关键限制：`vm_init` 只创建独立根页表，不加载 CR3；页表页来自静态池，不由物理页分配器分配；模块注释明确要求这些表页仍处于当前恒等映射可访问的范围。因此当前模块是页表构建器/数据结构管理器，而不是完整的活动虚拟内存子系统。
+模块层限制：`vm_init` 本身创建内核页表根，不在调用时加载 CR3；页表页来自静态池，不由物理页分配器分配。Phase 3 进程运行时另外创建用户地址空间并激活私有 CR3，因而已有有限活动地址空间路径，但尚非完整 VM 子系统。
 
 ### English
 
@@ -196,7 +196,7 @@ The allocator reserves low memory, the kernel image, Multiboot structures and ca
 
 `vm_unmap_page` clears the leaf PTE and reclaims empty page-table pages from the bottom upward while preserving the root. `vm_query_page` returns the physical address and leaf flags. `vm_self_test` exercises mapping, querying, duplicate mapping, unmapping and the user-permission path within the inactive page-table pool.
 
-Critical limitation: `vm_init` creates a separate root but does not load CR3; page-table pages come from a static pool rather than the physical allocator; and the module comments require those pages to remain accessible through the current identity map. The current module is therefore a page-table builder/data-structure manager, not a complete active virtual-memory subsystem.
+Module-level limitation: `vm_init` creates the kernel page-table root but does not itself load CR3; page-table pages still come from a static pool, not the physical allocator. The Phase 3 process runtime separately creates and activates a private user CR3, so an active address-space path exists, but this is not a complete virtual-memory subsystem.
 
 ## 9. Ring 0 cooperative scheduler / Ring 0 协作式调度器
 
@@ -232,29 +232,29 @@ The current `main` sequence is important because it describes the actual integra
    重映射 PIC、初始化 IDT 并配置 PIT。
 5. Initialize GDT and TSS.
    初始化 GDT 和 TSS。
-6. Print that the Ring 3 test is disabled because page permissions are not ready.
-   输出 Ring 3 测试因页权限尚未准备好而禁用的信息。
-7. Initialize the two-task cooperative scheduler.
-   初始化双任务协作式调度器。
-8. Execute `sti` and enter `task_start`.
-   执行 `sti` 开启中断，并进入 `task_start`。
+6. Initialize filesystem and register the test syscall handlers.
+   初始化文件系统并注册测试系统调用处理程序。
+7. Prepare the ELF process runtime, private page-table root and USER/RW/NX user stack; activate CR3 and enter CPL3.
+   准备 ELF 进程运行时、私有页表根及 USER/RW/NX 用户栈，激活 CR3 并进入 CPL3。
+8. The Ring 3 probe exercises syscall echo/return and exit; the runtime reclaims its pages, then starts the two-task cooperative Ring 0 scheduler.
+   Ring 3 测试执行系统调用 echo/返回与退出；运行时回收进程页后，启动双任务 Ring 0 协作式调度。
 
 ## 11. Security and correctness boundaries / 安全与正确性边界
 
-- **No user isolation yet:** current bootstrap mappings are broad supervisor mappings; a future user address space needs deliberate kernel/user separation.
-  **尚无用户隔离：** 当前引导映射是范围较大的 supervisor 映射；未来用户地址空间必须明确分离内核和用户区域。
+- **Limited user isolation exists:** the Phase 3 runtime uses a private page-table root and validates user stack/page permissions. This is not proof of complete isolation across all address-space, TLB, or concurrent mapping edge cases.
+  **已有有限用户隔离路径：** Phase 3 运行时使用独立页表根并检查用户栈/页面权限；这不代表所有地址空间、TLB 或并发映射边界均已验证。
 
-- **NX is not proven active:** the current boot code does not show NX capability detection or EFER.NXE enablement.
-  **NX 尚未证明生效：** 当前引导代码没有显示 NX 能力检测或 EFER.NXE 开启步骤。
+- **NX is enabled conditionally:** the BIOS bootstrap checks CPU NX support and enables EFER.NXE when supported. NX behavior still requires runtime fault tests on the target CPU/emulator.
+  **NX 条件启用：** BIOS 引导检测 CPU NX 支持，并在支持时启用 EFER.NXE；NX 故障行为仍需目标 CPU/模拟器运行测试。
 
-- **Page-table manager is inactive:** no CR3 switch, TLB invalidation strategy for active mappings, or integration with physical-frame allocation is present in the documented interface.
-  **页表管理器未激活：** 当前接口没有 CR3 切换、活动映射的 TLB 失效策略，也没有与物理页框分配集成。
+- **CR3 switching is integrated in the Phase 3 path:** the runtime activates a private CR3; scheduler/address-space switching is covered by host tests but is not a complete concurrent process scheduler.
+  **CR3 切换已接入 Phase 3 路径：** 运行时激活独立 CR3；调度器/地址空间切换有主机测试，但尚不是完整并发进程调度。
 
 - **No preemption:** the timer path does not switch task contexts.
   **没有抢占：** 定时器路径不会切换任务上下文。
 
-- **Kernel panic is terminal:** exceptions halt the kernel.
-  **内核 panic 是终止性的：** 异常发生后内核停机。
+- **Kernel faults are terminal; selected CPL3 faults are contained:** the exception handler attempts to terminate the current process on user-origin exceptions, but this is not comprehensive fault recovery.
+  **内核异常仍是终止性的；部分 CPL3 异常可被隔离：** 异常处理器尝试终止用户进程，但这不是全面故障恢复。
 
 - **No complete syscall ABI:** a user-to-kernel service interface must be designed, validated and documented before Ring 3 can be considered useful.
   **没有完整系统调用 ABI：** 在 Ring 3 可被视为可用之前，必须设计、验证并记录用户到内核的服务接口。
@@ -297,7 +297,7 @@ The current `main` sequence is important because it describes the actual integra
 - VFS/RAMFS 基础。
 - Ring 3 基础特权级转换。
 - Ring 0 协作式调度。
-- QBuild v0.5.0。
+- QBuild v1.0.0。
 - 主机端 ASan/UBSan 测试。
 
 **仍需继续完成或验收的部分：**
@@ -307,7 +307,7 @@ The current `main` sequence is important because it describes the actual integra
 - 抢占式任务调度。
 - 稳定的系统调用 ABI。
 - 完整的 QBoot 启动管理器。
-- x86_64 UEFI 启动支持。
+- 完整、release-ready 的 x86_64 UEFI 启动与安全加固（已有初步实现和 CI 测试）。
 - AArch64 平台支持。
 - 完整桌面环境及基础应用。
 - 安装器和恢复环境。
@@ -318,13 +318,11 @@ The current `main` sequence is important because it describes the actual integra
 当前双任务测试证明协作式任务可以交替执行，
 不能据此宣称抢占式调度已完成。
 
-进程 metadata registry 只提供进程元数据管理基础，
-不代表已经实现完整 CR3 切换、独立地址空间、
-进程隔离和完整生命周期管理。
+进程 metadata registry 仍只是元数据层；Phase 3 runtime 已接入独立 CR3、用户栈、CPL3 测试及退出回收，但尚未完成多进程并发调度和完整生命周期管理。
 
 ### 用户态模型
 
-Ring 3 基础转换测试证明 CPU 特权级转换路径可运行。
+Phase 3 QEMU 运行标志报告用户进程通过私有 CR3 进入 CPL3、执行测试 syscall 并退出；这仍是有限测试运行时，不是完整用户态环境。
 完整用户空间隔离、系统调用 ABI 和进程级资源保护
 仍需要独立实现和测试。
 
@@ -349,22 +347,22 @@ experimental, and planned implementations.
 Implemented foundations include the x86_64 BIOS build path,
 GDT/TSS/IDT, memory-management foundations, VFS/RAMFS,
 a basic Ring 3 transition test, cooperative Ring 0 scheduling,
-QBuild v0.5.0, and host ASan/UBSan testing.
+QBuild v1.0.0, host ASan/UBSan testing, and an initial private-CR3 Ring 3 process runtime.
 
 Outstanding work includes full user-space isolation,
 complete process/thread management, preemptive scheduling,
 a stable syscall ABI, a complete self-developed QBoot,
-UEFI and AArch64 support, the desktop environment,
+release-ready UEFI hardening and AArch64 support, the desktop environment,
 basic applications, installer, recovery, and end-to-end
 Chinese/English localization.
 
 A cooperative scheduler test is not evidence of preemptive
 scheduling. A process metadata registry is not a complete
-process/address-space implementation. A Ring 3 transition
-test is not proof of complete isolation.
+process/address-space implementation. The current Phase 3 runtime test
+is not proof of complete isolation or production process support.
 
-The current BIOS bootstrap must not be described as a
-completed QBoot product.
+The BIOS bootstrap and the initial UEFI path must not be described as
+release-ready QBoot products.
 
 Desktop components and applications remain planned until
 their implementation and acceptance tests are available.

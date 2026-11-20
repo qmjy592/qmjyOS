@@ -8,6 +8,9 @@
 #include "qmjy/heap.h"
 #include "qmjy/kernel.h"
 #include "qmjy/syscall.h"
+#include "qmjy/x86_64_trap.h"
+#include "qmjy/syscall_x86_64.h"
+#include "qmjy/process_runtime.h"
 #include "../../fs/core/fs_init.h"
 #include "../../fs/qfs/qfs.h"
 #include "../../fs/partition/mbr.h"
@@ -125,218 +128,233 @@ extern void _start64(void);
  * ------------------------------------------------- */
 
 #define RING3_CODE_VA  0x0000000040000000ULL
-#define RING3_STACK_VA 0x0000000040001000ULL
+#define RING3_ELF_OFFSET 0x1000U
+#define RING3_ELF_CAPACITY (RING3_ELF_OFFSET + MM_PAGE_SIZE)
 
 extern void ring3_enter(uint64_t user_rsp, uint64_t user_rip);
 extern char user_blob_start[];
 extern char user_blob_end[];
 
-static void ring3_zero_page(uint64_t physical)
+struct ring3_elf64_header {
+    uint8_t ident[16];
+    uint16_t type;
+    uint16_t machine;
+    uint32_t version;
+    uint64_t entry;
+    uint64_t phoff;
+    uint64_t shoff;
+    uint32_t flags;
+    uint16_t ehsize;
+    uint16_t phentsize;
+    uint16_t phnum;
+    uint16_t shentsize;
+    uint16_t shnum;
+    uint16_t shstrndx;
+} __attribute__((packed));
+
+struct ring3_elf64_program_header {
+    uint32_t type;
+    uint32_t flags;
+    uint64_t offset;
+    uint64_t virtual_address;
+    uint64_t physical_address;
+    uint64_t file_size;
+    uint64_t memory_size;
+    uint64_t alignment;
+} __attribute__((packed));
+
+static uint8_t g_ring3_elf_file[RING3_ELF_CAPACITY]
+    __attribute__((aligned(16)));
+
+static size_t ring3_build_elf_image(void)
 {
-    volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)physical;
-    for (size_t i = 0; i < MM_PAGE_SIZE / sizeof(uint64_t); ++i)
-        p[i] = 0;
+    struct ring3_elf64_header *header =
+        (struct ring3_elf64_header *)(void *)g_ring3_elf_file;
+    struct ring3_elf64_program_header *program;
+    const size_t code_size = (size_t)(user_blob_end - user_blob_start);
+    size_t i;
+
+    if (code_size == 0 || code_size > MM_PAGE_SIZE ||
+        RING3_ELF_OFFSET + code_size > sizeof(g_ring3_elf_file))
+        return 0;
+
+    for (i = 0; i < sizeof(g_ring3_elf_file); ++i)
+        g_ring3_elf_file[i] = 0;
+
+    header->ident[0] = 0x7F;
+    header->ident[1] = 'E';
+    header->ident[2] = 'L';
+    header->ident[3] = 'F';
+    header->ident[4] = 2; /* ELFCLASS64 */
+    header->ident[5] = 1; /* little-endian */
+    header->ident[6] = 1; /* current ELF version */
+    header->type = 2;     /* ET_EXEC */
+    header->machine = 62; /* EM_X86_64 */
+    header->version = 1;
+    header->entry = RING3_CODE_VA;
+    header->phoff = sizeof(*header);
+    header->ehsize = sizeof(*header);
+    header->phentsize = sizeof(*program);
+    header->phnum = 1;
+
+    program = (struct ring3_elf64_program_header *)(void *)(
+        g_ring3_elf_file + header->phoff);
+    program->type = 1; /* PT_LOAD */
+    program->flags = 4U | 1U; /* PF_R | PF_X; never writable+executable */
+    program->offset = RING3_ELF_OFFSET;
+    program->virtual_address = RING3_CODE_VA;
+    program->physical_address = 0;
+    program->file_size = code_size;
+    program->memory_size = code_size;
+    program->alignment = MM_PAGE_SIZE;
+
+    for (i = 0; i < code_size; ++i)
+        g_ring3_elf_file[RING3_ELF_OFFSET + i] =
+            (uint8_t)user_blob_start[i];
+    return RING3_ELF_OFFSET + code_size;
 }
 
 /*
- * Called from syscall_entry on the TSS.RSP0 kernel stack.
- * RAX=1 is the Ring 3 test-exit request.
- */
-/*
- * The only syscall exposed by the current Ring 3 probe is a test exit request.
- * It is deliberately routed through the generic dispatcher, but it is not a
- * production process-exit ABI and does not copy user pointers.
+ * The probe now follows the real ELF -> process -> private CR3 -> CPL3 path.
+ * Ordinary syscalls round-trip through a saved trap frame and IRETQ. The
+ * exit handler switches back to the kernel root before restoring the saved
+ * Ring 0 continuation.
  */
 static qm_syscall_result_t syscall_test_exit(
     const qm_syscall_context_t *context)
 {
     if (context == NULL || context->number != QM_SYSCALL_TEST_EXIT)
         return QM_ERR_INVALID;
-    serial_puts("[Ring 3] System call received successfully.\n");
-    serial_puts("[Ring 3] Returning to Ring 0.\n");
+    if (qm_process_runtime_exit_current((qm_s32_t)context->arguments[0]) != QM_OK)
+        return QM_ERR_STATE;
+    serial_puts("[Ring 3] Process exit accepted; kernel CR3 restored.\n");
     return QM_OK;
 }
 
-void ring3_syscall_handler(uint64_t syscall_number)
+static qm_syscall_result_t syscall_test_echo(
+    const qm_syscall_context_t *context)
+{
+    if (context == NULL || context->number != QM_SYSCALL_TEST_ECHO)
+        return QM_ERR_INVALID;
+    return (qm_syscall_result_t)context->arguments[0];
+}
+
+qm_u64_t ring3_syscall_handler(qm_x86_64_trap_frame_t *frame)
 {
     qm_syscall_context_t context = {0};
     qm_syscall_result_t result;
-    context.number = syscall_number;
+    qm_u64_t active_root;
+
+    if (qm_syscall_context_from_x86_64_frame(frame, &context) != QM_OK)
+        return (qm_u64_t)QM_ERR_PERMISSION;
+
+    active_root = vm_current_root_physical();
     result = qm_syscall_dispatch(&context);
-    if (result != QM_OK)
+    if (active_root != vm_root_physical() &&
+        vm_current_root_physical() == vm_root_physical())
+        return QM_X86_64_TRAP_EXIT_TO_KERNEL;
+    if (result < 0)
         serial_puts("[Ring 3] System call rejected by dispatcher.\n");
+    return (qm_u64_t)result;
 }
 
 static int ring3_prepare_and_run(void)
 {
-    uint64_t code_pa = 0;
-    uint64_t stack_pa = 0;
-    uint64_t query_pa = 0;
-    uint64_t query_flags = 0;
-    int code_mapped = 0;
-    int stack_mapped = 0;
-    int activated = 0;
-    int stack_page_releasable = 1;
-    int code_page_releasable = 1;
+    qm_process_handle_t process_id = 0;
+    qm_process_runtime_info_t runtime_info;
+    uint64_t physical = 0;
+    uint64_t flags = 0;
+    size_t elf_size;
     int result = -1;
+    int process_loaded = 0;
 
-    const size_t blob_size =
-        (size_t)(user_blob_end - user_blob_start);
-
-    serial_puts("\n[Ring 3] Preparing isolated user address space.\n");
-
+    serial_puts("\n[Ring 3] Preparing ELF-backed isolated process.\n");
     if (!vm_nx_enabled()) {
         serial_puts("[Ring 3] ERROR: CPU NX support or EFER.NXE unavailable.\n");
         return -1;
     }
-
-    if (blob_size == 0 || blob_size > MM_PAGE_SIZE) {
-        serial_puts("[Ring 3] ERROR: user code size invalid.\n");
-        return -1;
-    }
-
-    /*
-     * Rebuild clean inactive page tables after the paging self-test.
-     */
     if (vm_init() != VM_OK) {
-        serial_puts("[Ring 3] ERROR: vm_init failed.\n");
+        serial_puts("[Ring 3] ERROR: kernel page-table initialization failed.\n");
+        return -1;
+    }
+    if (qm_process_runtime_init() != QM_OK) {
+        serial_puts("[Ring 3] ERROR: process runtime initialization failed.\n");
         return -1;
     }
 
-    if (mm_alloc_page(&code_pa) != MM_OK) {
-        serial_puts("[Ring 3] ERROR: cannot allocate user code page.\n");
+    elf_size = ring3_build_elf_image();
+    if (elf_size == 0) {
+        serial_puts("[Ring 3] ERROR: ELF smoke image construction failed.\n");
         return -1;
     }
-
-    if (mm_alloc_page(&stack_pa) != MM_OK) {
-        serial_puts("[Ring 3] ERROR: cannot allocate user stack page.\n");
-        mm_free_page(code_pa);
+    if (qm_process_runtime_load("ring3-elf-smoke", g_ring3_elf_file,
+                                elf_size, &process_id) != QM_OK) {
+        serial_puts("[Ring 3] ERROR: ELF-to-process load failed.\n");
         return -1;
     }
+    process_loaded = 1;
 
-    ring3_zero_page(code_pa);
-    ring3_zero_page(stack_pa);
-
-    /* Copy the position-independent user program to its own page. */
-    {
-        volatile uint8_t *dst = (volatile uint8_t *)(uintptr_t)code_pa;
-        const uint8_t *src = (const uint8_t *)user_blob_start;
-
-        for (size_t i = 0; i < blob_size; ++i)
-            dst[i] = src[i];
-    }
-
-    /*
-     * User code: USER, read-only, executable.
-     * User stack: USER, writable, NX.
-     */
-    if (vm_map_page(RING3_CODE_VA, code_pa, VM_USER) != VM_OK) {
-        serial_puts("[Ring 3] ERROR: code mapping failed.\n");
+    if (qm_process_runtime_query(process_id, &runtime_info) != QM_OK ||
+        runtime_info.entry != RING3_CODE_VA ||
+        runtime_info.owned_page_count != 2U ||
+        runtime_info.user_stack_pointer == 0) {
+        serial_puts("[Ring 3] ERROR: process runtime metadata invalid.\n");
         goto cleanup;
     }
-    code_mapped = 1;
-
-    if (vm_map_page(RING3_STACK_VA, stack_pa,
-                    VM_USER | VM_WRITE | VM_NO_EXECUTE) != VM_OK) {
-        serial_puts("[Ring 3] ERROR: stack mapping failed.\n");
+    if (qm_process_runtime_query_page(process_id, RING3_CODE_VA,
+                                      &physical, &flags) != QM_OK ||
+        !(flags & VM_USER) || (flags & VM_WRITE) ||
+        (flags & VM_NO_EXECUTE)) {
+        serial_puts("[Ring 3] ERROR: ELF text mapping is not USER/RX.\n");
         goto cleanup;
     }
-    stack_mapped = 1;
-
-    /* Verify user code mapping. */
-    if (vm_query_page(RING3_CODE_VA, &query_pa, &query_flags) != VM_OK ||
-        query_pa != code_pa ||
-        !(query_flags & VM_USER) ||
-        (query_flags & VM_WRITE) ||
-        (query_flags & VM_NO_EXECUTE)) {
-        serial_puts("[Ring 3] ERROR: code permissions invalid.\n");
+    if (qm_process_runtime_query_page(process_id,
+            runtime_info.user_stack_pointer & ~(VM_PAGE_SIZE - 1U),
+            &physical, &flags) != QM_OK ||
+        !(flags & VM_USER) || !(flags & VM_WRITE) ||
+        !(flags & VM_NO_EXECUTE)) {
+        serial_puts("[Ring 3] ERROR: process stack mapping is not USER/RW/NX.\n");
+        goto cleanup;
+    }
+    if (qm_process_runtime_query_page(process_id, 0x00200000ULL,
+                                      &physical, &flags) != QM_OK ||
+        (flags & VM_USER)) {
+        serial_puts("[Ring 3] ERROR: shared kernel mapping is user-accessible.\n");
         goto cleanup;
     }
 
-    /* Verify user stack mapping. */
-    if (vm_query_page(RING3_STACK_VA, &query_pa, &query_flags) != VM_OK ||
-        query_pa != stack_pa ||
-        !(query_flags & VM_USER) ||
-        !(query_flags & VM_WRITE) ||
-        !(query_flags & VM_NO_EXECUTE)) {
-        serial_puts("[Ring 3] ERROR: stack permissions invalid.\n");
+    serial_puts("[Ring 3] ELF loader committed private RX segment.\n");
+    serial_puts("[Ring 3] Private PML4 and USER/RW/NX stack: ready.\n");
+    serial_puts("[Ring 3] Kernel identity mapping remains supervisor-only.\n");
+
+    if (qm_process_runtime_activate(process_id) != QM_OK) {
+        serial_puts("[Ring 3] ERROR: private CR3 activation failed.\n");
         goto cleanup;
     }
+    serial_puts("[Ring 3] Private CR3 activated. Entering CPL3.\n");
+    ring3_enter(runtime_info.user_stack_pointer, runtime_info.entry);
 
-    /* Verify the kernel identity mapping remains supervisor-only. */
-    if (vm_query_page(0x00200000ULL, &query_pa, &query_flags) != VM_OK ||
-        (query_flags & VM_USER)) {
-        serial_puts("[Ring 3] ERROR: kernel mapping is user-accessible.\n");
+    if (vm_current_root_physical() != vm_root_physical()) {
+        serial_puts("[Ring 3] ERROR: returned without restoring kernel CR3.\n");
         goto cleanup;
     }
-
-    serial_puts("[Ring 3] User code page: RX, U/S=1.\n");
-    serial_puts("[Ring 3] User stack page: RW/NX, U/S=1.\n");
-    serial_puts("[Ring 3] Kernel identity mapping: supervisor-only.\n");
-
-    /*
-     * All mappings and permissions are ready.
-     * vm_activate switches CR3 only after the kernel identity map exists.
-     */
-    if (vm_activate() != VM_OK) {
-        serial_puts("[Ring 3] ERROR: CR3 activation failed.\n");
-        goto cleanup;
+    if (qm_process_runtime_reap(process_id) != QM_OK) {
+        serial_puts("[Ring 3] ERROR: exited process resource reclamation failed.\n");
+        return -1;
     }
-    activated = 1;
-
-    serial_puts("[Ring 3] CR3 activated.\n");
-    serial_puts("[Ring 3] Entering CPL3.\n");
-
-    /*
-     * The user program executes:
-     *     mov $1, %eax
-     *     int $0x80
-     *
-     * syscall_entry restores the saved Ring 0 stack and returns here.
-     */
-    ring3_enter(RING3_STACK_VA + MM_PAGE_SIZE - 16,
-                RING3_CODE_VA);
-
-    serial_puts("[Ring 3] Returned to Ring 0 successfully.\n");
+    process_loaded = 0;
+    serial_puts("[Ring 3] ELF process exit and page reclamation: PASS.\n");
     result = 0;
+    return result;
 
 cleanup:
-    /*
-     * Once CR3 is active, vm_unmap_page invalidates the affected TLB entry.
-     * Keep the active page-table root; the scheduler continues using it.
-     */
-    if (stack_mapped) {
-        if (vm_unmap_page(RING3_STACK_VA) != VM_OK) {
-            serial_puts("[Ring 3] WARNING: stack unmap failed.; page retained.\n");
-            stack_page_releasable = 0;
-            result = -1;
-        }
+    if (process_loaded) {
+        if (qm_process_runtime_terminate(process_id, -1) != QM_OK ||
+            qm_process_runtime_reap(process_id) != QM_OK)
+            serial_puts("[Ring 3] WARNING: failed process cleanup; resources retained.\n");
     }
-
-    if (code_mapped) {
-        if (vm_unmap_page(RING3_CODE_VA) != VM_OK) {
-            serial_puts("[Ring 3] WARNING: code unmap failed.; page retained.\n");
-            code_page_releasable = 0;
-            result = -1;
-        }
-    }
-
-    if (stack_pa && stack_page_releasable &&
-        mm_free_page(stack_pa) != MM_OK) {
-        serial_puts("[Ring 3] WARNING: stack page release failed.\n");
-        result = -1;
-    }
-
-    if (code_pa && code_page_releasable &&
-        mm_free_page(code_pa) != MM_OK) {
-        serial_puts("[Ring 3] WARNING: code page release failed.\n");
-        result = -1;
-    }
-
-    (void)activated;
     return result;
 }
-
 
 static void serial_put_hex32(uint32_t value) {
     static const char digits[] = "0123456789ABCDEF";
@@ -559,10 +577,15 @@ static qm_status_t kernel_init_core(void)
 
     status = qm_syscall_register(QM_SYSCALL_TEST_EXIT, syscall_test_exit);
     if (status != QM_OK) {
-        serial_puts("[SYSCALL] ERROR: test syscall registration failed.\n");
+        serial_puts("[SYSCALL] ERROR: test-exit registration failed.\n");
         return status;
     }
-    serial_puts("[SYSCALL] Generic dispatcher initialized; Ring 3 test-exit registered.\n");
+    status = qm_syscall_register(QM_SYSCALL_TEST_ECHO, syscall_test_echo);
+    if (status != QM_OK) {
+        serial_puts("[SYSCALL] ERROR: test-echo registration failed.\n");
+        return status;
+    }
+    serial_puts("[SYSCALL] Generic dispatcher initialized; Ring 3 ABI probes registered.\n");
     return QM_OK;
 }
 

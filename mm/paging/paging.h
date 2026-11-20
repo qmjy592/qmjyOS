@@ -30,6 +30,17 @@ enum vm_status {
     VM_ERR_ACTIVE = -9
 };
 
+/* Opaque handle for an isolated lower-half user address space. */
+typedef struct vm_address_space {
+    uint64_t root_physical;
+    uint64_t pdpt_physical;
+    uint32_t magic;
+    uint32_t reserved;
+} vm_address_space_t;
+
+#define VM_USER_MIN_VA 0x0000000040000000ULL
+#define VM_USER_MAX_VA 0x00007FFFFFFF0000ULL
+
 /*
  * Inactive page-table builder.
  * vm_init() builds a supervisor identity map for the first 1 GiB using
@@ -44,6 +55,20 @@ int vm_is_active(void);
 int vm_invalidate_page(uint64_t virtual_address);
 int vm_nx_enabled(void);
 int vm_init(void);
+int vm_address_space_create(vm_address_space_t *space);
+int vm_address_space_destroy(vm_address_space_t *space);
+int vm_address_space_activate(const vm_address_space_t *space);
+int vm_address_space_map_page(vm_address_space_t *space,
+                              uint64_t virtual_address,
+                              uint64_t physical_address, uint64_t flags);
+int vm_address_space_unmap_page(vm_address_space_t *space,
+                                uint64_t virtual_address);
+int vm_address_space_protect_page(vm_address_space_t *space,
+                                 uint64_t virtual_address, uint64_t flags);
+int vm_address_space_query_page(const vm_address_space_t *space,
+                                uint64_t virtual_address,
+                                uint64_t *physical_address, uint64_t *flags);
+uint64_t vm_current_root_physical(void);
 int vm_map_page(uint64_t virtual_address, uint64_t physical_address, uint64_t flags);
 int vm_unmap_page(uint64_t virtual_address);
 int vm_query_page(uint64_t virtual_address, uint64_t *physical_address, uint64_t *flags);

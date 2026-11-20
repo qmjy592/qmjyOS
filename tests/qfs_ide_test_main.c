@@ -56,6 +56,35 @@ static void qfs_log(const char *message)
     serial_puts(message);
 }
 
+static void qfs_log_int(const char *prefix, int value)
+{
+    char digits[16];
+    unsigned int magnitude;
+    unsigned int count = 0;
+
+    qfs_log(prefix);
+
+    if (value < 0) {
+        qfs_log("-");
+        magnitude = (unsigned int)(-(value + 1)) + 1U;
+    } else {
+        magnitude = (unsigned int)value;
+    }
+
+    do {
+        digits[count++] = (char)('0' + magnitude % 10U);
+        magnitude /= 10U;
+    } while (magnitude != 0 && count < sizeof(digits));
+
+    while (count != 0) {
+        char c = digits[--count];
+        qfs_debug_putc(c);
+        serial_putc(c);
+    }
+
+    qfs_log("\n");
+}
+
 static void qfs_test_halt(void)
 {
     for (;;) {
@@ -170,13 +199,20 @@ void main(uint32_t multiboot_magic, uint32_t multiboot_info_addr)
     qfs_log("[QFS] CREATE_OK\n");
 
     qfs_log("[QFS] WRITE_BEGIN\n");
-
-    if (vfs_write(
+    {
+        int write_result = vfs_write(
             file,
             0,
             test_payload,
-            sizeof(test_payload)) != (int)sizeof(test_payload)) {
-        qfs_test_fail("persistent test file write failed");
+            sizeof(test_payload));
+
+        if (write_result != (int)sizeof(test_payload)) {
+            qfs_log_int("[QFS DIAG] vfs_write returned: ",
+                        write_result);
+            qfs_log_int("[QFS DIAG] expected bytes: ",
+                        (int)sizeof(test_payload));
+            qfs_test_fail("persistent test file write failed");
+        }
     }
     qfs_log("[QFS] WRITE_OK\n");
 

@@ -46,3 +46,18 @@ has already been implemented.
 - Host tests do not prove hardware behavior.
 - Build tests do not prove runtime correctness.
 - Target tests must record architecture and execution environment.
+
+- make test-process-runtime
+- make test-scheduler-aspace
+
+- `make test-syscall-x86_64-abi` — x86_64 Ring 3 syscall trap-frame argument/return ABI
+
+## Phase 3 regression targets
+
+QBuild currently includes these specific host regression tests in the BIOS suite:
+
+- `test-process-runtime` — process image loading/address-space/stack/runtime lifecycle.
+- `test-scheduler-aspace` — task address-space root association and CR3 activation/switch logic.
+- `test-syscall-x86_64-abi` — trap-frame register/argument/result mapping.
+
+These targets do not make the planned unified QTest framework implemented. The framework registration/reporting/filtering architecture above remains a plan.

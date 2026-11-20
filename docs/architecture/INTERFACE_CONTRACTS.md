@@ -94,7 +94,7 @@
 
 ### 9.1 QBuild 模块实现状态
 
-QBuild v0.5.0 的模块状态文件为：
+QBuild 1.0.0 的模块状态文件为：
 
     config/modules.status
 

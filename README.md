@@ -1,14 +1,14 @@
 # qmjyOS — 自研实验性操作系统 / Experimental Operating System
 
-qmjyOS is a self-developed experimental operating-system project, primarily written in freestanding C and x86 assembly. The current development baseline targets x86_64 with a BIOS development bootstrap. The project is building a modular kernel foundation, architecture boundaries, public interfaces, memory management, interrupt handling, filesystems, scheduling, and its own boot infrastructure named QBoot.
+qmjyOS is a self-developed experimental operating-system project, primarily written in freestanding C and x86 assembly. The current development baseline targets x86_64, with BIOS and an initial UEFI boot path under CI validation. The project is building a modular kernel foundation, architecture boundaries, public interfaces, memory management, interrupt handling, filesystems, scheduling, and its own boot infrastructure named QBoot.
 
-qmjyOS 是一个自研的实验性操作系统项目，主要使用 freestanding C 和 x86 汇编开发。当前开发基线为 x86_64 + BIOS 开发引导链，正在逐步建设模块化内核基础设施、架构边界、公共接口、内存管理、中断处理、文件系统、任务调度以及自研启动体系 QBoot。
+qmjyOS 是一个自研的实验性操作系统项目，主要使用 freestanding C 和 x86 汇编开发。当前开发基线为 x86_64；BIOS 开发引导链和初步 UEFI 引导路径正在 CI 验证。项目逐步建设模块化内核基础设施、架构边界、公共接口、内存管理、中断处理、文件系统、任务调度以及自研启动体系 QBoot。
 
 > **Project status / 项目状态:** Phase 1 — System Foundation completed and uploaded on 2026-11-11. The project remains experimental, is not production-ready, and has not undergone a complete security audit.
 >
 > **当前状态：** 第一阶段“系统骨架建设”已于 2026-11-11 完成验收并上传仓库。项目仍处于实验开发阶段，不适合生产环境，尚未完成全面安全审计。
 
-> **Phase 2/3 integration tranche:** the repository now includes the bounded heap, kernel boot-info/init-registry foundations, and QFS/MBR integrity repairs. This integration bundle adds the Multiboot-to-Boot-Info adapter, ordered startup registration, syscall test-dispatch bridge, ELF64 load core and process metadata table. These remain experimental foundations; the complete process/runtime/QShell boot chain is not yet finished.
+> **Phase 2/3 status (2026-11-21):** the kernel now has a tested host-side ELF-to-process runtime path with private page-table root setup, user stack permission validation, CR3 activation, CPL3 entry, syscall echo/exit probe, and process exit/page reclamation. The user reported an actual QEMU BIOS run passing the new Ring 3 process-runtime markers. The raw serial log was not included in the review snapshot. This is experimental—not a production process manager or security boundary.
 
 
 ## Documentation / 文档导航
@@ -16,6 +16,7 @@ qmjyOS 是一个自研的实验性操作系统项目，主要使用 freestanding
 ### Project and development / 项目与开发
 - [Phase 1 Completion and Acceptance / 第一阶段完成与验收](docs/development/PHASE1_COMPLETION.md)
 - [Phase 2/3 Integration Status / 第二、三阶段集成状态](docs/architecture/PHASE2_PHASE3_INTEGRATION.md)
+- [Phase 3 Runtime Validation / 第三阶段运行时验收](docs/development/PHASE3_RUNTIME_VALIDATION_2026-11-21.md)
 - [QBuild Documentation / QBuild 构建工具说明](tools/qbuild/README.md)
 - [Build and Test Guide / 构建与测试说明](tests/README.md)
 - [QTest Development Plan / QTest 开发计划](tests/qtest/README.md)
@@ -32,6 +33,7 @@ qmjyOS 是一个自研的实验性操作系统项目，主要使用 freestanding
 - [QBoot Handoff Protocol / QBoot 内核交接协议](boot/protocols/README.md)
 - [Language Edition Policy / 中英文版本政策](docs/internationalization/LANGUAGE_POLICY.md)
 - [Ring 3 QEMU Milestone Record / Ring 3 QEMU 里程碑记录](RING3_VALIDATION_2026-11-10.md)
+- [Phase 3 Runtime Validation / 第三阶段运行时验收](docs/development/PHASE3_RUNTIME_VALIDATION_2026-11-21.md)
 
 ## Phase 1 — System Foundation / 第一阶段：系统骨架
 
@@ -77,20 +79,20 @@ On 2026-11-11, the following local validation completed successfully:
 
 第一阶段于 2026-11-11 完成最终本地验收：Shell/Python 语法、QBuild 配置与模块映射、完整内核构建、物理内存测试、分页主机侧自测试、VFS、RAMFS、公共接口头文件编译、BIOS 启动映像静态检查、文档入口、构建产物忽略规则和 Git 差异检查均通过。
 
-### QBuild v0.5.0 module inventory / 模块统计
+### Current QBuild module inventory / 当前模块统计
 
 | Item | Acceptance value |
 |---|---:|
-| Total modules | 51 |
-| Modules with source mappings | 9 |
-| Modules in the current build plan | 14 |
+| Total modules | 58 |
+| Modules with source mappings | 22 |
+| Modules in the current build plan | 17 |
 | Status: implemented | 1 |
-| Status: experimental | 9 |
-| Status: planned | 41 |
+| Status: experimental | 20 |
+| Status: planned | 37 |
 
-These are separate metadata counts: source mappings, current build-plan membership, and implementation status are not interchangeable. A header, directory, dependency entry, or successful compile does not by itself make a subsystem fully implemented.
+These are separate metadata counts reported by QBuild 1.0.0 on 2026-11-21: source mappings, current build-plan membership, and implementation status are not interchangeable. A header, directory, dependency entry, or successful compile does not by itself make a subsystem fully implemented.
 
-以上是不同维度的统计：源码映射数量、当前构建计划模块数量和实现状态数量不能混为一谈。仅有头文件、目录、依赖条目或编译成功，并不意味着子系统已经完整实现。
+以上是 QBuild 1.0.0 于 2026-11-21 输出的不同维度统计：源码映射数量、当前构建计划模块数量和实现状态数量不能混为一谈。仅有头文件、目录、依赖条目或编译成功，并不意味着子系统已经完整实现。
 
 ## Current implementation snapshot / 当前实现概况
 
@@ -100,27 +102,27 @@ The following describes the current source tree and documented test evidence. It
 
 ### Boot and architecture / 启动与架构
 
-- The current supported build target is **x86_64 + BIOS**.
+- CI build/runtime coverage currently targets **x86_64 + BIOS and x86_64 + UEFI** (UEFI remains an initial implementation).
 - The BIOS path contains a Multiboot-based 32-bit development bootstrap and a transition into the 64-bit kernel image.
 - Early boot establishes an identity mapping for the first 1 GiB using 2 MiB pages.
 - The current bootstrap is not the complete QBoot BIOS boot manager.
-- x86_64 UEFI and AArch64 boot/build support remain planned and are rejected as unsupported build targets by the current QBuild configuration.
+- x86_64 UEFI has an initial build/runtime CI path; AArch64 targets remain unsupported and are rejected by QBuild.
 - QBoot is the project-owned boot-manager direction; GRUB or another third-party boot manager is not the intended final boot manager.
 
-- 当前受支持的构建目标是 **x86_64 + BIOS**。
+- 当前 CI 构建/运行覆盖目标包括 **x86_64 + BIOS 与 x86_64 + UEFI**（UEFI 仍是初步实现）。
 - BIOS 路径包含基于 Multiboot 的 32 位开发引导程序，并切换到 64 位内核映像。
 - 早期启动使用 2 MiB 页建立前 1 GiB 的恒等映射。
 - 当前 bootstrap 还不是完整的 QBoot BIOS 启动管理器。
-- x86_64 UEFI 与 AArch64 启动/构建仍处于规划阶段，当前 QBuild 会明确拒绝尚未实现的目标。
+- x86_64 UEFI 已具备初步构建/运行 CI 路径；AArch64 目标仍未支持，QBuild 会明确拒绝。
 - QBoot 是项目计划自研的启动管理器，不以 GRUB 或其他第三方启动管理器作为最终方案。
 
 ### CPU, interrupts, and scheduling / CPU、中断与调度
 
 - x86_64 entry code, GDT reload, TSS setup, IDT infrastructure, exception entry stubs, serial diagnostics, PIC remapping, PIT setup, and IRQ entry/dispatch code exist in the source tree.
-- A basic Ring 0 → Ring 3 → Ring 0 path, a user code page, a user stack, CR3 activation, and an `int 0x80` test syscall have a separate QEMU milestone record dated 2026-11-10.
+- Phase 3 now includes a user-reported QEMU BIOS run of a private process address-space path, USER/RW/NX stack validation, CR3 activation, CPL3 entry, syscall probe, exit and page reclamation (2026-11-21).
 - The Ring 0 scheduler is a two-task cooperative scheduler with an assembly context switch. It is not a preemptive scheduler.
-- The basic Ring 3 milestone does not establish complete process isolation, a production syscall ABI, or recoverable user-process fault handling.
-- The exception path currently provides kernel diagnostics and halt behavior; it is not a complete user-process recovery system.
+- The current process runtime does not establish complete multi-process isolation, a production syscall ABI, fault-safe user-copy recovery, or complete user-process exception recovery.
+- The exception path includes a user-fault exit hook, but full fault recovery and safe process continuation are not established; kernel exceptions remain terminal.
 - The keyboard IRQ path does not yet constitute a complete keyboard driver.
 
 - x86_64 入口、GDT 重新加载、TSS 设置、IDT 基础设施、异常入口桩、串口诊断、PIC 重映射、PIT 设置以及 IRQ 入口/分发代码已存在。
@@ -164,8 +166,8 @@ QBuild **1.0.0** 是统一的配置、模块管理、构建规划、构建、测
 
 ### Supported target / 当前支持目标
 
-- Supported: `x86_64` + `bios`.
-- Not yet supported: `x86_64` + `uefi`, and `aarch64` targets.
+- CI-covered: `x86_64` + `bios`, and initial `x86_64` + `uefi`. UEFI is experimental and not release-ready.
+- Not supported: `aarch64` + `bios/uefi`. QBuild rejects these targets.
 
 ### Common commands / 常用命令
 
@@ -205,7 +207,10 @@ QBuild 当前仍集成现有 Makefile，还不是完全独立的模块链接系�
 | `test-vfs` | VFS host-side operations | Persistent storage or hardware drivers |
 | `test-ramfs` | RAMFS and VFS integration on the host | Persistent filesystem support |
 | `test-interfaces` | Public header compile compatibility | Runtime implementation of every interface |
-| `test-boot` | Static checks of generated BIOS boot images | Actual BIOS/UEFI boot in QEMU or on hardware |
+| `test-boot` | BIOS image/static checks plus BIOS/QEMU runtime checks and QFS IDE test (requires QEMU) | Hardware compatibility, complete boot-manager features or security |
+| `test-process-runtime` | ELF-to-process runtime/address-space and stack validation under host harness | Complete hardware process isolation |
+| `test-scheduler-aspace` | Task/address-space CR3 behavior in host harness | Concurrent process scheduling or hardware TLB correctness |
+| `test-syscall-x86_64-abi` | x86_64 syscall trap-frame mapping | Production syscall ABI or security model |
 
 The full QBuild test command runs the currently integrated tests. The unified QTest runtime framework remains planned; see [tests/qtest/README.md](tests/qtest/README.md). A skipped test is not a pass.
 
@@ -362,6 +367,12 @@ acceptance tests. Update this document when its status changes.
 
 ## QBuild 1.0.0 — Current build-system baseline
 
-QBuild is now being advanced from its v0.5.0 foundation to the 1.0.0 build and project-management CLI. The 1.0.0 implementation adds guarded module enable/disable operations, integrity-checked configuration snapshots and rollback-aware restore, machine-readable build/test reports, toolchain diagnostics, and QBuild's own regression suite. The existing Makefile remains the actual kernel build and test backend. Only x86_64 + BIOS is supported; UEFI, AArch64, dynamic module loading, and a complete QTest runtime are not claimed. QBuild 1.0.0 is a separate tool version and does not change the planned qmjyOS 0.1.0 system release.
+QBuild 1.0.0 provides the stable build and project-management CLI on top of the v0.5.0 foundation. The 1.0.0 implementation includes guarded module enable/disable operations, integrity-checked configuration snapshots and rollback-aware restore, machine-readable build/test reports, toolchain diagnostics, and QBuild's own regression suite. The existing Makefile remains the actual kernel build and test backend. CI now covers x86_64 + BIOS and an initial x86_64 + UEFI path. AArch64, dynamic module loading, and a complete QTest runtime are not claimed. QBuild 1.0.0 is a separate tool version and does not change the planned qmjyOS 0.1.0 system release.
 
-QBuild 1.0.0 的开发目标是在 v0.5.0 基础上提供稳定的构建与工程管理入口，新增带依赖保护的模块启停、带完整性校验的配置快照与回滚恢复、机器可读构建/测试报告、工具链诊断和 QBuild 自身回归测试。内核真实构建与测试仍由现有 Makefile 执行。当前仍只支持 x86_64 + BIOS；不宣称 UEFI、AArch64、动态模块加载或完整 QTest 运行时已经实现。QBuild 版本独立于 qmjyOS 0.1.0 系统发布版本。
+QBuild 1.0.0 的开发目标是在 v0.5.0 基础上提供稳定的构建与工程管理入口，新增带依赖保护的模块启停、带完整性校验的配置快照与回滚恢复、机器可读构建/测试报告、工具链诊断和 QBuild 自身回归测试。内核真实构建与测试仍由现有 Makefile 执行。CI 已覆盖 x86_64 + BIOS 和初步 x86_64 + UEFI；不宣称 AArch64、动态模块加载或完整 QTest 运行时已经实现。QBuild 版本独立于 qmjyOS 0.1.0 系统发布版本。
+
+## Phase 3 process-runtime regression tests / 第三阶段进程运行时回归测试
+
+The host suite includes `test-process-runtime`, `test-scheduler-aspace`, and `test-syscall-x86_64-abi`. BIOS and UEFI QEMU runtime checks require the private CR3, CPL3, process-exit/page-reclamation markers as well as scheduler progress. See [Phase 3 Runtime Validation](docs/development/PHASE3_RUNTIME_VALIDATION_2026-11-21.md).
+
+主机侧测试包含 `test-process-runtime`、`test-scheduler-aspace` 和 `test-syscall-x86_64-abi`。BIOS/UEFI QEMU 运行检查要求私有 CR3、CPL3、进程退出/页面回收标志以及调度器持续运行。详见[第三阶段运行时验收](docs/development/PHASE3_RUNTIME_VALIDATION_2026-11-21.md)。

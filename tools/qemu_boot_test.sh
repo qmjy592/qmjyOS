@@ -85,6 +85,9 @@ require_log "Hello, x86_64 kernel!"
 
 # Confirm the isolated Ring 3 transition returned to Ring 0.
 require_log "[Ring 3] Basic privilege transition: PASS."
+require_log "[Ring 3] Private PML4 and USER/RW/NX stack: ready."
+require_log "[Ring 3] Private CR3 activated. Entering CPL3."
+require_log "[Ring 3] ELF process exit and page reclamation: PASS."
 
 # Confirm the cooperative scheduler started.
 require_log "Starting cooperative Ring 0 scheduler."
